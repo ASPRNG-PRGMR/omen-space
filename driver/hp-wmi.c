@@ -377,6 +377,15 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
 	},
 	{
+		/*
+		 * 8D2F: HP Omen 16-am0xxx (16-am0240tx). Same broken GETB / WMBA
+		 * helper (AE_AML_BUFFER_LIMIT on _SB.WMID.WMBX / WMBA).
+		 * Use no-EC params to skip EC reads.
+		 */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D2F")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
 		/* 8BC2: Victus by HP Gaming Laptop 16-r0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
 		.driver_data = (void *)&victus_s_thermal_params,
@@ -3633,6 +3642,10 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 	},
 	{
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8E35") },
+	},
+	{
+		/* 8D2F: HP Omen 16-am0xxx (16-am0240tx) */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D2F") },
 	},
 	{}
 };
