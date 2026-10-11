@@ -1,4 +1,4 @@
-﻿/// Integration / unit tests for omen-space-daemon
+/// Integration / unit tests for omen-space-daemon
 ///
 /// Issues covered:
 ///   #264 — chassis_temp cache prevents AE_AML_BUFFER_LIMIT journal flood
@@ -205,6 +205,17 @@ mod tests {
         assert_eq!(to_ppd("balanced"), "balanced");
         assert_eq!(to_ppd("custom"), "balanced", "Unknown profiles must fall back to balanced (fix #283)");
         assert_eq!(to_ppd(""), "balanced");
+    }
+
+    // ── Board 8D2F fan capabilities ──────────────────────────────────────────
+
+    #[test]
+    fn board_8d2f_fan_capabilities() {
+        let json = boards_json();
+        let board = get_board(&json, "8D2F").expect("Board 8D2F must exist");
+        assert_eq!(board["supports_fan_control_wmi"].as_bool(), Some(false));
+        assert_eq!(board["supports_fan_curves"].as_bool(), Some(false));
+        assert_eq!(board["supports_rpm_readback"].as_bool(), Some(true));
     }
 
     // ── boards.json integrity ─────────────────────────────────────────────────

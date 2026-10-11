@@ -375,12 +375,14 @@ impl FanService {
             if sysfs_exists(&pwm_enable_path).await {
                 let current = sysfs_read(&pwm_enable_path, 2).await;
                 if current != 0 {
-                    // Set manual duty 255 first, then set enable=0
-                    let _ = sysfs_write(&pwm_enable_path, "1").await;
-                    let _ = sysfs_write(&pwm_path, "255").await;
+                    // Set manual duty 255 first if pwm node exists, then set enable=0
+                    if sysfs_exists(&pwm_path).await {
+                        let _ = sysfs_write(&pwm_enable_path, "1").await;
+                        let _ = sysfs_write(&pwm_path, "255").await;
+                    }
                     let _ = sysfs_write(&pwm_enable_path, "0").await;
                 }
-            } else {
+            } else if sysfs_exists(&pwm_path).await {
                 let _ = sysfs_write(&pwm_path, "255").await;
             }
             state.last_written_duty = Some(255);
@@ -389,6 +391,26 @@ impl FanService {
             for &fan_num in &state.found_fans.clone() {
                 state.last_targets.insert(fan_num, max_speed);
             }
+            return true;
+        }
+
+        let duty = if pct == 0 {
+            0
+        } else {
+            let d = Self::pct_to_pwm(pct);
+            if d > 0 && d < 50 { 50 } else { d }
+        };
+
+        // If the hardware does not expose a manual PWM node, intermediate duty cycles cannot be set
+        if !sysfs_exists(&pwm_path).await {
+            if sysfs_exists(&pwm_enable_path).await {
+                let current = sysfs_read(&pwm_enable_path, 2).await;
+                if current != 2 {
+                    let _ = sysfs_write(&pwm_enable_path, "2").await;
+                }
+            }
+            state.last_written_duty = Some(duty);
+            state.last_written_duty_time = Some(now);
             return true;
         }
 
@@ -404,13 +426,6 @@ impl FanService {
                 let _ = sysfs_write(&pwm_enable_path, "1").await;
             }
         }
-
-        let duty = if pct == 0 {
-            0
-        } else {
-            let d = Self::pct_to_pwm(pct);
-            if d > 0 && d < 50 { 50 } else { d }
-        };
 
         // Prevent I/O flooding: only write if duty changed or 10 seconds elapsed
         let should_write = state.last_written_duty != Some(duty) || 
@@ -798,17 +813,25 @@ impl FanService {
         let mut ok = false;
         if let Some(ref hwmon) = state.hwmon_path {
             if pwm_enable_val == 0 {
-                // Max boost mode: write 1, write 255, then write 0
-                let _ = sysfs_write(hwmon.join("pwm1_enable"), "1").await;
-                let _ = sysfs_write(hwmon.join("pwm1"), "255").await;
+                // Max boost mode: write 1, write 255 if pwm1 exists, then write 0
+                if sysfs_exists(hwmon.join("pwm1")).await {
+                    let _ = sysfs_write(hwmon.join("pwm1_enable"), "1").await;
+                    let _ = sysfs_write(hwmon.join("pwm1"), "255").await;
+                }
                 ok = sysfs_write(hwmon.join("pwm1_enable"), "0").await;
             } else if pwm_enable_val == 1 {
-                let current = sysfs_read(hwmon.join("pwm1_enable"), 2).await;
-                if current == 0 {
-                    let _ = sysfs_write(hwmon.join("pwm1_enable"), "2").await;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                if !sysfs_exists(hwmon.join("pwm1")).await {
+                    // Manual PWM control is not supported without pwm1 sysfs node.
+                    // Fall back to hardware EC mode (pwm1_enable=2) instead of failing.
+                    ok = sysfs_write(hwmon.join("pwm1_enable"), "2").await;
+                } else {
+                    let current = sysfs_read(hwmon.join("pwm1_enable"), 2).await;
+                    if current == 0 {
+                        let _ = sysfs_write(hwmon.join("pwm1_enable"), "2").await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
+                    ok = sysfs_write(hwmon.join("pwm1_enable"), "1").await;
                 }
-                ok = sysfs_write(hwmon.join("pwm1_enable"), "1").await;
             } else if pwm_enable_val == 2 {
                 ok = sysfs_write(hwmon.join("pwm1_enable"), "2").await;
             }
