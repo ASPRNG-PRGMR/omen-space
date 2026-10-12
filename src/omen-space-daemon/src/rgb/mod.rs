@@ -59,11 +59,10 @@ impl RgbHardware {
     fn detect_with_override(zone_override: Option<u32>) -> Self {
         let mut hw = Self::detect_raw();
         if !hw.is_new_driver {
-            if let Some(n) = zone_override {
-                if n == 4 || n == 8 {
-                    hw.zone_count = n;
-                }
-            }
+            hw.zone_count = match zone_override {
+                Some(n) if n == 4 || n == 8 => n,
+                _ => 4, // Honor the built-in default of 4
+            };
         }
         hw
     }
