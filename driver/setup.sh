@@ -225,6 +225,26 @@ install_hpwmi_override() {
     remove_hpwmi_override
 }
 
+remove_conflicting_hpwmi_dkms() {
+    # Other DKMS packages that also build hp-wmi.ko (e.g. TUXOV's
+    # hp-wmi-fan-and-backlight-control, which hp-omen-extra is based on) install
+    # into the same updates/ path. On every kernel upgrade DKMS rebuilds all
+    # registered packages and whichever installs last wins, so our hp-wmi gets
+    # silently replaced. Deleting their .ko files is not enough; the DKMS
+    # registration itself has to go.
+    local conf pkg ver
+    for conf in /var/lib/dkms/*/*/source/dkms.conf; do
+        [ -f "$conf" ] || continue
+        pkg=$(echo "$conf" | cut -d/ -f5)
+        ver=$(echo "$conf" | cut -d/ -f6)
+        [ "$pkg" = "$MODNAME" ] && continue
+        grep -Eq '^[[:space:]]*BUILT_MODULE_NAME\[[0-9]+\]="?hp[-_]wmi"?[[:space:]]*$' "$conf" || continue
+        warn "DKMS package $pkg/$ver also provides hp-wmi.ko and would overwrite ours on kernel upgrades. Removing it..."
+        dkms remove -m "$pkg" -v "$ver" --all \
+            || warn "Could not remove $pkg/$ver. Remove it manually: sudo dkms remove $pkg/$ver --all"
+    done
+}
+
 remove_hpwmi_override() {
     if [ -f "$HPWMI_OVERRIDE_CONF" ]; then
         rm -f "$HPWMI_OVERRIDE_CONF"
@@ -257,6 +277,10 @@ do_install() {
     cp "$SCRIPT_DIR/dkms.conf" "$SCRIPT_DIR/Makefile" "$SCRIPT_DIR"/*.c \
        "/usr/src/${MODNAME}-${MODVER}/"
     cp "$SCRIPT_DIR"/*.h "/usr/src/${MODNAME}-${MODVER}/" 2>/dev/null || true
+
+    # Runs before the purge below: dkms remove may restore an archived hp-wmi.ko
+    # into updates/, which the purge then cleans up.
+    remove_conflicting_hpwmi_dkms
 
     # Purge stale .ko files from previous installs that may reference
     # removed symbols (e.g. hp_wmi_mutex).  Without this, modprobe may

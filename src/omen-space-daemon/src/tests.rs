@@ -250,4 +250,36 @@ mod tests {
             );
         }
     }
+
+    fn fake_dkms_package(root: &std::path::Path, pkg: &str, ver: &str, conf: &str) {
+        let dir = root.join(pkg).join(ver).join("source");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dkms.conf"), conf).unwrap();
+    }
+
+    #[test]
+    fn dkms_packages_shipping_hp_wmi_are_reported_except_our_own() {
+        let root = std::env::temp_dir().join(format!("omen-dkms-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        fake_dkms_package(&root, "hp-omen-extra", "2.1.4",
+            "BUILT_MODULE_NAME[0]=\"hp-wmi\"\nBUILT_MODULE_NAME[1]=\"hp-omen-extra\"\n");
+        fake_dkms_package(&root, "hp-wmi-fan-and-backlight-control", "0.0.2",
+            "PACKAGE_NAME=\"hp-wmi-fan-and-backlight-control\"\nBUILT_MODULE_NAME[0]=\"hp-wmi\"\n");
+        fake_dkms_package(&root, "other-wmi", "1.0", "BUILT_MODULE_NAME[0]=hp_wmi\n");
+        fake_dkms_package(&root, "nvidia", "580.0", "BUILT_MODULE_NAME[0]=\"nvidia\"\n");
+
+        let found = crate::conflict_detector::conflicting_hpwmi_dkms_packages(&root);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found, vec!["hp-wmi-fan-and-backlight-control/0.0.2", "other-wmi/1.0"]);
+    }
+
+    #[test]
+    fn missing_dkms_root_reports_nothing() {
+        let found = crate::conflict_detector::conflicting_hpwmi_dkms_packages(
+            std::path::Path::new("/nonexistent/omen-dkms-root"),
+        );
+        assert!(found.is_empty());
+    }
 }
