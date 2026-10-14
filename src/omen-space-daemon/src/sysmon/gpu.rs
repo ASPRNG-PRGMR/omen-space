@@ -23,6 +23,20 @@ fn get_nvidia_dgpu_path() -> Option<std::path::PathBuf> {
         })
         .clone()
 }
+
+/// True for compositor/session processes that hold an idle graphics or compute context on the dGPU.
+fn is_desktop_process(pid: u32) -> bool {
+    const IGNORED: &[&str] = &[
+        "kwin_wayland", "kwin_wayland_wr", "kwin_x11", "Xwayland", "Xorg", "X",
+        "gnome-shell", "mutter", "plasmashell", "Hyprland", "sway", "weston",
+        "cosmic-comp", "niri", "labwc", "wayfire",
+    ];
+    match fs::read_to_string(format!("/proc/{}/comm", pid)) {
+        Ok(name) => IGNORED.contains(&name.trim()),
+        Err(_) => false,
+    }
+}
+
 pub fn check_nvidia_state() -> Option<bool> {
     if let Some(path) = get_nvidia_dgpu_path() {
         let status_path = path.join("power/runtime_status");
@@ -100,8 +114,15 @@ pub fn fetch_gpu_metrics_with_timeout() -> Option<GpuMetrics> {
         if let Ok(mut nvml_guard) = nvml_lock.try_lock() {
             if let Some(nvml) = nvml_guard.as_mut() {
                 if let Ok(device) = nvml.device_by_index(0) {
-                    let gfx = device.running_graphics_processes().map(|v| v.len()).unwrap_or(0);
-                    let comp = device.running_compute_processes().map(|v| v.len()).unwrap_or(0);
+                    // Desktop compositors keep an idle graphics/compute context open on the dGPU even
+                    // when the iGPU renders the desktop. Counting them as "clients" means
+                    // the idle cooldown never arms and NVML polling keeps the card in D0.
+                    let gfx = device.running_graphics_processes()
+                        .map(|v| v.iter().filter(|p| !is_desktop_process(p.pid)).count())
+                        .unwrap_or(0);
+                    let comp = device.running_compute_processes()
+                        .map(|v| v.iter().filter(|p| !is_desktop_process(p.pid)).count())
+                        .unwrap_or(0);
                     let has_clients = (gfx + comp) > 0;
                     
                     let mut temp = None;
@@ -178,11 +199,24 @@ pub fn get_safe_gpu_temp() -> f64 {
 
     if !has_active_clients {
         // Card is awake in D0, but zero applications are using it.
-        // Start 6s quiet window so the kernel's autosuspend timer can finish.
+        // Start 12s quiet window so the kernel's autosuspend timer can finish cleanly.
         let mut guard = GPU_IDLE_COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+        *guard = Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
         return 0.0;
     }
 
     gpu_temp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_desktop_process() {
+        // Non-existent PID returns false
+        assert!(!is_desktop_process(999_999_999));
+        // Current process (cargo test runner) is not a desktop compositor
+        assert!(!is_desktop_process(std::process::id()));
+    }
 }
