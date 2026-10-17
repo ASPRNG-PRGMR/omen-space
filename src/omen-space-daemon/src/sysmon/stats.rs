@@ -215,9 +215,9 @@ pub fn fetch_system_stats() -> SystemStats {
             nvml_timed_out = true; 
         }
         if !has_active_clients {
-            // Zero game/render clients detected. Arm 6s quiet window so kernel can suspend.
+            // Zero game/render clients detected. Arm 12s quiet window so kernel can suspend.
             let mut guard = GPU_IDLE_COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
-            *guard = Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+            *guard = Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
             stats.gpu_temp = 0;
             stats.gpu_pwr = -1.0;
         }
