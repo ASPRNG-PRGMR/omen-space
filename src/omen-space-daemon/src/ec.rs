@@ -40,7 +40,10 @@ impl LinuxEcController {
 
         let is_unsafe_model = Self::check_unsafe_model();
         if is_unsafe_model {
-            warn!("LinuxEcController: UNSAFE MODEL DETECTED! Legacy EC writes will be blocked to prevent Caps Lock panic.");
+            static LOGGED_UNSAFE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED_UNSAFE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                warn!("LinuxEcController: UNSAFE MODEL DETECTED! Legacy EC writes will be blocked to prevent Caps Lock panic.");
+            }
         }
 
         let mut ec = LinuxEcController {
@@ -49,8 +52,10 @@ impl LinuxEcController {
             is_unsafe_ec_model: false,
             is_unsafe_model,
         };
-        ec.ensure_ec_sys();
-        ec.has_ec_access = Path::new(EC_PATH).exists();
+        if !is_unsafe_model {
+            ec.ensure_ec_sys();
+            ec.has_ec_access = Path::new(EC_PATH).exists();
+        }
         ec
     }
 

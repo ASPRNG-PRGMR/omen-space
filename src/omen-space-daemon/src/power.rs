@@ -416,29 +416,11 @@ impl PowerService {
     }
 
     async fn detect_current_profile() -> String {
-        if !Self::has_custom_power_manager() {
-        // 1. Try system76-power if installed
-        if let Ok(out) = tokio::process::Command::new("system76-power").arg("profile").output().await {
-            if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
-                if stdout.contains("performance") { return "performance".to_string(); }
-                if stdout.contains("battery") { return "power-saver".to_string(); }
-                if stdout.contains("balanced") { return "balanced".to_string(); }
-            }
-        }
-
-        // 2. Try powerprofilesctl if installed
-        if let Ok(out) = tokio::process::Command::new("powerprofilesctl").arg("get").output().await {
-            if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
-                return Self::normalize_profile(&stdout);
-            }
-        }
-        }
-
-        // 3. Fallback: Try platform_profile first (underscore then hyphen)
+        // 1. Prefer direct kernel hardware state (platform_profile / thermal_profile)
+        // so placeholder power-profiles-daemon states never mask the real OMEN mode (#293, #297).
         let platform_paths = [
             "/sys/firmware/acpi/platform_profile",
+            "/sys/class/platform-profile/platform-profile-0/profile",
             "/sys/devices/platform/hp-wmi/platform_profile",
             "/sys/devices/platform/hp-wmi/platform-profile",
         ];
@@ -459,6 +441,27 @@ impl PowerService {
                 return "balanced".to_string();
             }
         }
+
+        if !Self::has_custom_power_manager() {
+            // 2. Try system76-power if installed
+            if let Ok(out) = tokio::process::Command::new("system76-power").arg("profile").output().await {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+                    if stdout.contains("performance") { return "performance".to_string(); }
+                    if stdout.contains("battery") { return "power-saver".to_string(); }
+                    if stdout.contains("balanced") { return "balanced".to_string(); }
+                }
+            }
+
+            // 3. Try powerprofilesctl if installed
+            if let Ok(out) = tokio::process::Command::new("powerprofilesctl").arg("get").output().await {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+                    return Self::normalize_profile(&stdout);
+                }
+            }
+        }
+
         "balanced".to_string()
     }
 
@@ -539,7 +542,6 @@ impl PowerService {
                 if let Ok(status) = child.wait().await {
                     if status.success() {
                         info!("Set system76-power profile to '{}'", s76_profile);
-                        ok = true;
                     }
                 }
             }
@@ -708,11 +710,23 @@ impl PowerService {
         let mut active = Self::detect_current_profile().await;
         
         let available_profiles = Self::get_available_profiles().await;
+        let has_hw_profile_node = [
+            "/sys/firmware/acpi/platform_profile",
+            "/sys/class/platform-profile/platform-profile-0/profile",
+            "/sys/devices/platform/hp-wmi/platform_profile",
+            "/sys/devices/platform/hp-wmi/platform-profile",
+            "/sys/devices/platform/hp-wmi/thermal_profile",
+            "/sys/devices/platform/hp-wmi/thermal-profile",
+        ]
+        .iter()
+        .any(|p| sysfs_exists(p));
         
-        // If hardware doesn't support power-saver or performance natively but user selected it,
-        // report it back so the UI doesn't bounce to "Balanced". Software limits (PL1/PL2, GPU)
-        // are still applied under the hood.
-        if active == "balanced" {
+        // If hardware doesn't expose a sysfs profile readback node (e.g. #297 on 8786 when
+        // stock hp-wmi is loaded) or doesn't support power-saver/performance natively in PPD,
+        // report the user-selected profile so the UI doesn't bounce back to "Balanced" (#293, #297).
+        if !has_hw_profile_node && !cfg.power_profile.is_empty() {
+            active = Self::normalize_profile(&cfg.power_profile);
+        } else if active == "balanced" {
             if cfg.power_profile == "power-saver" && !available_profiles.iter().any(|c| c == "power-saver" || c == "low-power" || c == "quiet" || c == "cool") {
                 active = "power-saver".to_string();
             } else if cfg.power_profile == "performance" && !available_profiles.iter().any(|c| c == "performance") {
@@ -728,8 +742,6 @@ impl PowerService {
         if let Some(val) = sysfs_read_async("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw").await {
             if let Ok(uw) = val.parse::<u32>() { real_pl2 = uw / 1_000_000; }
         }
-
-        let available_profiles = Self::get_available_profiles().await;
 
         let json = serde_json::json!({
             "available": true,

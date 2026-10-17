@@ -183,14 +183,14 @@ static bool has_mux = false;
 static const char *const omen_thermal_profile_boards[] = {
 	"84DA", "84DB", "84DC", "8572", "8573", "8574", "8575", "8600",
 	"8601", "8602", "8603", "8604", "8605", "8606", "8607", "860A",
-	"8746", "8747", "8748", "8749", "874A", "8786", "8787", "8788",
-	"878A", "878B", "878C", "87B5", "886B", "886C", "88C8", "88CB",
+	"8746", "8747", "8748", "8749", "874A", "8787", "8788",
+	"878B", "878C", "87B5", "886B", "886C", "88C8", "88CB",
 	"88D1", "88D2", "88F4", "88F5", "88F6", "88F7", "88FD", "88FE",
 	"88FF", "8900", "8901", "8902", "8912", "8917", "8918", "8949",
 	"894A", "89EB", "8A15", "8A18", "8BAD", "8C58", "8E41",
 	/*
-	 * FIX: 8D41 (HP Omen Max), 8BAC (HP Omen 16-wf0xxx), 8BA9, 8E35,
-	 * 8C75 (HP Omen 17-db0xxx), 8C77, 8BCD removed from this list so
+	 * FIX: 8786, 878A, 8D41 (HP Omen Max), 8BAC (HP Omen 16-wf0xxx), 8BA9,
+	 * 8E35, 8C75 (HP Omen 17-db0xxx), 8C77, 8BCD removed from this list so
 	 * they fall through to the Victus S-series thermal profile path,
 	 * which correctly handles boards with no EC thermal profile readback.
 	 */
@@ -236,7 +236,7 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 	{
 		/* 8DD0: Victus by HP Gaming Laptop 15-fb3xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8DD0")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8902")},
@@ -265,12 +265,27 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_legacy_thermal_params,
 	},
 	{
+		/* 8A4C: OMEN by HP Laptop 16-k0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A4C")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
+	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A4D")},
 		.driver_data = (void *)&omen_v1_legacy_thermal_params,
 	},
 	{
+		/* 8B3B: OMEN by HP Gaming Laptop 16-wd0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8B3B")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
+	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BAB")},
 		.driver_data = (void *)&omen_v1_thermal_params,
+	},
+	{
+		/* 8BB2: Victus by HP Gaming Laptop 16-s0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BB2")},
+		.driver_data = (void *)&victus_s_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BBE")},
@@ -279,6 +294,11 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
 		.driver_data = (void *)&omen_v1_thermal_params,
+	},
+	{
+		/* 8BC8: OMEN by HP Gaming Laptop 16-xf0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC8")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BCA")},
@@ -313,6 +333,11 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&victus_s_known_ec_thermal_params,
 	},
 	{
+		/* 8C9A: OMEN by HP Gaming Laptop 16-xd0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C9A")},
+		.driver_data = (void *)&victus_s_thermal_params,
+	},
+	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C9C")},
 		.driver_data = (void *)&victus_s_thermal_params,
 	},
@@ -323,35 +348,39 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 	{
 		/* 8D40: HP OMEN Slim Gaming Laptop 16-an0xxx */
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D40") },
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
+		/* 8D41: HP OMEN Gaming Laptop 16-ap0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D41")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D42")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
+		/* 8A50: OMEN by HP Gaming Laptop 16-n0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A50")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
+		/* 8E0F: Victus by HP Gaming Laptop 15-fa2xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8E0F")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D3F")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
+		/* 8D87 / 8D88: HP OMEN MAX Gaming Laptop 16-ah0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D87")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D88")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BA9")},
@@ -378,17 +407,12 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 	},
 	{
 		/*
-		 * 8D2F: HP Omen 16-am0xxx (16-am0240tx). Same broken GETB / WMBA
-		 * helper (AE_AML_BUFFER_LIMIT on _SB.WMID.WMBX / WMBA).
-		 * Use no-EC params to skip EC reads.
+		 * 8D2F: HP Omen 16-am0xxx (16-am0240tx). Uses standard BIOS
+		 * WMI GUID (broken_omen_hpc_guid_boards) and unknown-EC params
+		 * so manual fan control (pwm1 / fan*_target) remains enabled.
 		 */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D2F")},
-		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
-	},
-	{
-		/* 8BC2: Victus by HP Gaming Laptop 16-r0xxx */
-		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
-		.driver_data = (void *)&victus_s_thermal_params,
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		/* 8C3F: Victus by HP Gaming Laptop 15-fa1xxx */
@@ -799,6 +823,10 @@ retry:
 check_retry:
         if (ret) {
                 if (!retried && !strcmp(active_bios_guid, HPWMI_OMEN_HPC_GUID)) {
+                        if (!obj && wmi_has_guid(HPWMI_BIOS_GUID)) {
+                                pr_info("OMEN HPC WMI GUID method aborted; permanently falling back to standard BIOS WMI GUID\n");
+                                active_bios_guid = HPWMI_BIOS_GUID;
+                        }
                         kfree(output.pointer);
                         output.pointer = NULL;
                         output.length = ACPI_ALLOCATE_BUFFER;
@@ -3114,6 +3142,9 @@ static int hp_wmi_apply_fan_settings(struct hp_wmi_hwmon_priv *priv)
 		 */
 		cancel_delayed_work(&priv->keep_alive_dwork);
 		ret = hp_wmi_fan_speed_max_reset(priv);
+		if (is_victus_s_thermal_profile())
+			schedule_delayed_work(&priv->keep_alive_dwork,
+					      secs_to_jiffies(KEEP_ALIVE_DELAY_SECS));
 		break;
 
 	default:
@@ -3407,6 +3438,28 @@ static void hp_wmi_hwmon_keep_alive_handler(struct work_struct *work)
 	 * running.  Checking mode here closes that race.
 	 */
 	if (priv->mode == PWM_MODE_AUTO) {
+		/*
+		 * On Victus-S / modern Omen boards (e.g. 8D41), WMI 0x10
+		 * (hp_wmi_get_fan_count_userdefine_trigger) and the active
+		 * thermal profile have a ~120s firmware countdown timer.
+		 * If left unrefreshed in BIOS AUTO fan mode, the EC reverts
+		 * CPU PL1/PL2 to low defaults (~40 W) after 120s (#302).
+		 * Refresh only when Performance mode is active or after the
+		 * user has transitioned fan modes, preserving cold-boot
+		 * NVIDIA Dynamic Boost in Balanced mode (#270).
+		 */
+		if (is_victus_s_thermal_profile() &&
+		    active_thermal_profile_params &&
+		    active_thermal_profile_params->ec_tp_offset != HP_NO_THERMAL_PROFILE_OFFSET) {
+			if (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE ||
+			    priv->prev_mode != -1) {
+				hp_wmi_get_fan_count_userdefine_trigger();
+				if (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE)
+					omen_thermal_profile_set(active_thermal_profile_params->performance);
+			}
+			schedule_delayed_work(&priv->keep_alive_dwork,
+					      secs_to_jiffies(KEEP_ALIVE_DELAY_SECS));
+		}
 		mutex_unlock(&priv->hwmon_lock);
 		return;
 	}
@@ -3594,8 +3647,11 @@ static int hp_wmi_hwmon_init(void)
 	 * on these boards.
 	 */
 	if (active_thermal_profile_params &&
-	    active_thermal_profile_params->ec_tp_offset == HP_EC_OFFSET_UNKNOWN)
+	    active_thermal_profile_params->ec_tp_offset == HP_EC_OFFSET_UNKNOWN) {
+		schedule_delayed_work(&priv->keep_alive_dwork,
+				      secs_to_jiffies(KEEP_ALIVE_DELAY_SECS));
 		return 0;
+	}
 
 	hp_wmi_apply_fan_settings(priv);
 
@@ -3626,6 +3682,15 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C75") },
 	},
 	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C76") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C77") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C78") },
+	},
+	{
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8BAC") },
 	},
 	{
@@ -3646,6 +3711,54 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 	{
 		/* 8D2F: HP Omen 16-am0xxx (16-am0240tx) */
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D2F") },
+	},
+	{
+		/* 8D3F / 8D40 / 8D41 / 8D42: HP Omen 16-an0xxx / 16-ap0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D3F") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D40") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D41") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D42") },
+	},
+	{
+		/* 8D87 / 8D88: HP OMEN MAX Gaming Laptop 16-ah0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D87") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D88") },
+	},
+	{
+		/* 8A4C: OMEN by HP Laptop 16-k0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8A4C") },
+	},
+	{
+		/* 8A50: OMEN by HP Gaming Laptop 16-n0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8A50") },
+	},
+	{
+		/* 8B3B: OMEN by HP Gaming Laptop 16-wd0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8B3B") },
+	},
+	{
+		/* 8BB2: Victus by HP Gaming Laptop 16-s0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8BB2") },
+	},
+	{
+		/* 8BC8: OMEN by HP Gaming Laptop 16-xf0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8BC8") },
+	},
+	{
+		/* 8C9A: OMEN by HP Gaming Laptop 16-xd0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C9A") },
+	},
+	{
+		/* 8E0F: Victus by HP Gaming Laptop 15-fa2xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8E0F") },
 	},
 	{}
 };

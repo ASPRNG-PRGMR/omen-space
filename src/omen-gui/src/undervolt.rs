@@ -172,7 +172,7 @@ pub fn build_page() -> gtk::Box {
         .title(i18n::t("pl1_label"))
         .subtitle(i18n::t("pl1_sub"))
         .build();
-    let pl1_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 25.0, 75.0, 1.0);
+    let pl1_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 25.0, 150.0, 1.0);
     pl1_scale.set_value(45.0);
     pl1_scale.set_hexpand(true);
     pl1_scale.set_size_request(200, -1);
@@ -197,7 +197,7 @@ pub fn build_page() -> gtk::Box {
         .title(i18n::t("pl2_label"))
         .subtitle(i18n::t("pl2_sub"))
         .build();
-    let pl2_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 45.0, 115.0, 1.0);
+    let pl2_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 45.0, 200.0, 1.0);
     pl2_scale.set_value(95.0);
     pl2_scale.set_hexpand(true);
     pl2_scale.set_size_request(200, -1);
@@ -254,6 +254,9 @@ pub fn build_page() -> gtk::Box {
         .margin_bottom(12)
         .build();
 
+    let default_pl1 = Rc::new(RefCell::new(45.0_f64));
+    let default_pl2 = Rc::new(RefCell::new(95.0_f64));
+
     let reset_btn = gtk::Button::builder()
         .label(i18n::t("reset_defaults"))
         .css_classes(["ec-btn"])
@@ -263,11 +266,13 @@ pub fn build_page() -> gtk::Box {
     let pl1_s_c = pl1_scale.clone();
     let pl2_s_c = pl2_scale.clone();
     let tcc_s_c = tcc_scale.clone();
+    let def_pl1_reset = default_pl1.clone();
+    let def_pl2_reset = default_pl2.clone();
     reset_btn.connect_clicked(move |_| {
         core_s_c.set_value(0.0);
         cache_s_c.set_value(0.0);
-        pl1_s_c.set_value(45.0);
-        pl2_s_c.set_value(95.0);
+        pl1_s_c.set_value(*def_pl1_reset.borrow());
+        pl2_s_c.set_value(*def_pl2_reset.borrow());
         tcc_s_c.set_value(0.0);
     });
 
@@ -304,6 +309,8 @@ pub fn build_page() -> gtk::Box {
     let pl2_s_load = pl2_scale.clone();
     let tcc_s_load = tcc_scale.clone();
     let badge_load = status_badge.clone();
+    let def_pl1_load = default_pl1.clone();
+    let def_pl2_load = default_pl2.clone();
     
     let cache_row_clone = cache_row.clone();
     let core_row_clone = core_row.clone();
@@ -319,7 +326,15 @@ pub fn build_page() -> gtk::Box {
         let mut is_amd = false;
         if let Ok(hw_json) = crate::daemon_client::get_hardware_specs_async().await {
             if let Ok(hw) = serde_json::from_str::<crate::daemon_client::HardwareSpecs>(&hw_json) {
-                is_amd = hw.cpu_spec.to_uppercase().contains("AMD");
+                let cpu_upper = hw.cpu_spec.to_uppercase();
+                is_amd = cpu_upper.contains("AMD");
+                // High-TDP HX / i9 / Core Ultra 7/9 / Ryzen 9 CPUs default to higher PL1/PL2 (#302)
+                if cpu_upper.contains("HX") || cpu_upper.contains("I9") || cpu_upper.contains("ULTRA 9") || cpu_upper.contains("ULTRA 7") || cpu_upper.contains("RYZEN 9") {
+                    *def_pl1_load.borrow_mut() = 80.0;
+                    *def_pl2_load.borrow_mut() = 140.0;
+                    pl1_s_load.set_value(80.0);
+                    pl2_s_load.set_value(140.0);
+                }
                 if is_cpu_locked(&hw.cpu_spec) {
                     locked = true;
                     warn_title_clone.set_label(i18n::t("uv_unsupported_title"));

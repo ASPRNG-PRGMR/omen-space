@@ -197,13 +197,13 @@ impl RgbHardware {
 
 #[derive(Debug, Clone)]
 struct HidPerKeyBackend {
-    hidraw_path: Option<String>,
+    hidraw_paths: Vec<String>,
     device_pid: Option<u16>,
 }
 
 impl HidPerKeyBackend {
     const HP_VID: u16 = 0x03F0;
-    /// Darfon is HP's keyboard ODM — present on OMEN MAX 16 (board 8D87) internal keyboard.
+    /// Darfon is HP's keyboard ODM — present on OMEN MAX 16 (board 8D87) and OMEN 16-ap0xxx (board 8D41) internal keyboard.
     const DARFON_VID: u16 = 0x0D62;
     /// Known per-key PIDs for HP VID (OpenRGB + OmenCore confirmed)
     const HP_KNOWN_PIDS: &'static [u16] = &[0x0538, 0x053A, 0x0547, 0x0549, 0x054E, 0x054F];
@@ -220,16 +220,34 @@ impl HidPerKeyBackend {
     const TOTAL_KEY_COUNT: usize = 104;
 
     fn new() -> Self {
-        let (hidraw_path, device_pid) = Self::find_device();
-        let backend = Self { hidraw_path, device_pid };
+        let (hidraw_paths, device_pid) = Self::find_devices();
+        let backend = Self { hidraw_paths, device_pid };
         if backend.is_available() {
-            info!("Initialized HidPerKeyBackend on {:?}", backend.hidraw_path);
+            info!("Initialized HidPerKeyBackend on {:?}", backend.hidraw_paths);
             backend.send_enter_per_key_mode(100);
         }
         backend
     }
 
-    fn find_device() -> (Option<String>, Option<u16>) {
+    fn has_vendor_usage_page(hidraw_sysfs: &Path) -> bool {
+        let desc_path = hidraw_sysfs.join("device/report_descriptor");
+        if let Ok(bytes) = std::fs::read(&desc_path) {
+            // In USB HID report descriptors, a 16-bit Usage Page item starts with 0x06
+            // followed by [low_byte, high_byte]; vendor-defined pages have high_byte == 0xFF.
+            for window in bytes.windows(3) {
+                if window[0] == 0x06 && window[2] == 0xFF {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn find_devices() -> (Vec<String>, Option<u16>) {
+        let mut vendor_paths = Vec::new();
+        let mut all_paths = Vec::new();
+        let mut found_pid = None;
+
         if let Ok(entries) = glob("/sys/class/hidraw/hidraw*") {
             for entry in entries.flatten() {
                 let uevent_path = entry.join("device/uevent");
@@ -247,15 +265,20 @@ impl HidPerKeyBackend {
                                     let is_darfon = vid == Self::DARFON_VID
                                         && Self::DARFON_KNOWN_PIDS.contains(&pid);
                                     if is_hp || is_darfon {
-                                        info!(
-                                            "Found HP Per-Key RGB device at {:?} VID={:04X} PID={:04X}",
-                                            entry, vid, pid
-                                        );
                                         let dev_path = format!(
                                             "/dev/{}",
                                             entry.file_name().unwrap_or_default().to_string_lossy()
                                         );
-                                        return (Some(dev_path), Some(pid));
+                                        let is_vendor = Self::has_vendor_usage_page(&entry);
+                                        info!(
+                                            "Found HP Per-Key RGB hidraw node {} (VID={:04X} PID={:04X}, vendor_page={})",
+                                            dev_path, vid, pid, is_vendor
+                                        );
+                                        found_pid = Some(pid);
+                                        if is_vendor {
+                                            vendor_paths.push(dev_path.clone());
+                                        }
+                                        all_paths.push(dev_path);
                                     }
                                 }
                             }
@@ -264,11 +287,19 @@ impl HidPerKeyBackend {
                 }
             }
         }
-        (None, None)
+
+        // Prefer vendor-defined HID interfaces (avoiding boot keyboard input0 on composite USB devices like 0d62:54bf).
+        // If report_descriptor wasn't readable, fall back to all matching interfaces in reverse order (highest interface first).
+        if !vendor_paths.is_empty() {
+            (vendor_paths, found_pid)
+        } else {
+            all_paths.reverse();
+            (all_paths, found_pid)
+        }
     }
 
     fn is_available(&self) -> bool {
-        self.hidraw_path.is_some()
+        !self.hidraw_paths.is_empty()
     }
 
     fn build_packet(&self, sub_command: u8) -> [u8; Self::PACKET_SIZE] {
@@ -280,23 +311,23 @@ impl HidPerKeyBackend {
     }
 
     fn write_packet(&self, packet: &[u8]) -> bool {
-        if let Some(ref path) = self.hidraw_path {
+        let mut any_ok = false;
+        for path in &self.hidraw_paths {
             match std::fs::OpenOptions::new().write(true).open(path) {
                 Ok(mut file) => {
                     use std::io::Write;
                     if let Err(e) = file.write_all(packet) {
                         warn!("Failed to write to {}: {}", path, e);
-                        return false;
+                    } else {
+                        any_ok = true;
                     }
-                    return true;
                 }
                 Err(e) => {
                     warn!("Failed to open {} for writing: {}", path, e);
-                    return false;
                 }
             }
         }
-        false
+        any_ok
     }
 
     fn send_enter_per_key_mode(&self, brightness: u32) -> bool {
@@ -888,6 +919,7 @@ impl RgbService {
     /// GetState — mirrors Python GetState().
     async fn get_state(&self) -> String {
         let g = self.inner.lock().await;
+        let any_driver = g.hw.available || g.hid_per_key.is_available() || g.desktop_rgb.is_available();
         let mut snap = serde_json::json!({
             "mode": g.config.mode,
             "colors": g.config.colors,
@@ -896,8 +928,8 @@ impl RgbService {
             "direction": g.config.direction,
             "power": g.config.power,
             "win_lock": g.config.win_lock,
-            "unsupported": !g.hw.available,
-            "driver_active": g.hw.available,
+            "unsupported": !any_driver,
+            "driver_active": any_driver,
             "driver_path": g.hw.driver_path.clone().unwrap_or_default(),
             "is_new_driver": g.hw.is_new_driver,
             "zone_count": g.hw.zone_count,

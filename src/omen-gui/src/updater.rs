@@ -398,16 +398,32 @@ fn start_update_process(vbox: gtk::Box, dialog: gtk::Window) {
             glib::ControlFlow::Continue
         });
 
-        let setup_path = if std::path::Path::new("/usr/share/omen-space/setup.sh").exists() {
+        let repo_setup = std::fs::read_to_string("/etc/omen-space/repo_path")
+            .ok()
+            .map(|p| format!("{}/setup.sh", p.trim()))
+            .filter(|p| std::path::Path::new(p).exists());
+
+        let setup_path = if let Some(path) = repo_setup {
+            path
+        } else if std::path::Path::new("/usr/share/omen-space/setup.sh").exists() {
             "/usr/share/omen-space/setup.sh".to_string()
         } else if std::path::Path::new("/opt/omen-space/setup.sh").exists() {
             "/opt/omen-space/setup.sh".to_string()
         } else {
             let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            format!("{}/omen-space/setup.sh", home_dir)
+            let candidates = [
+                format!("{}/omen-space/setup.sh", home_dir),
+                format!("{}/Downloads/omen-space/setup.sh", home_dir),
+                format!("{}/Projects/omen-space/setup.sh", home_dir),
+            ];
+            candidates
+                .into_iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .unwrap_or_else(|| format!("{}/omen-space/setup.sh", home_dir))
         };
         
         let mut cmd = match tokio::process::Command::new("pkexec")
+            .arg("bash")
             .arg(setup_path)
             .arg("update")
             .stdout(Stdio::piped())

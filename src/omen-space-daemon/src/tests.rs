@@ -207,15 +207,27 @@ mod tests {
         assert_eq!(to_ppd(""), "balanced");
     }
 
-    // ── Board 8D2F fan capabilities ──────────────────────────────────────────
+    // ── Board 8D2F fan capabilities (#305) ───────────────────────────────────
 
     #[test]
     fn board_8d2f_fan_capabilities() {
         let json = boards_json();
         let board = get_board(&json, "8D2F").expect("Board 8D2F must exist");
-        assert_eq!(board["supports_fan_control_wmi"].as_bool(), Some(false));
-        assert_eq!(board["supports_fan_curves"].as_bool(), Some(false));
+        assert_eq!(board["supports_fan_control_wmi"].as_bool(), Some(true));
+        assert_eq!(board["supports_fan_curves"].as_bool(), Some(true));
         assert_eq!(board["supports_rpm_readback"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn newly_verified_boards_present() {
+        let json = boards_json();
+        for id in [
+            "8A3D", "8A50", "8BBE", "8BD5", "8C99", "8C9C",
+            "8C9A", "8BB2", "8BC8", "8B3B", "8C78", "8786", "8A4C", "8D40",
+        ] {
+            assert!(get_board(&json, id).is_some(), "Board {} must exist in models", id);
+            assert!(is_verified(&json, id), "Board {} must exist in verified_boards", id);
+        }
     }
 
     // ── boards.json integrity ─────────────────────────────────────────────────

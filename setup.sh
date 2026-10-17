@@ -320,6 +320,8 @@ do_install() {
     cp src/omen-gui/assets/omenspace.png /usr/share/pixmaps/omenspace.png
     gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
     cp -r src/omen-gui/assets/* /usr/share/omen-space/assets/
+    install -m 755 "$SCRIPT_DIR/setup.sh" /usr/share/omen-space/setup.sh
+    echo "$SCRIPT_DIR" > /etc/omen-space/repo_path
 
     cat <<EOF > /etc/xdg/autostart/omenspace-tray.desktop
 [Desktop Entry]
@@ -428,6 +430,23 @@ do_uninstall() {
         ./setup.sh uninstall || true
         cd ..
     fi
+
+    # Fallback cleanup in case driver/setup.sh was not present or version mismatched (#302)
+    modprobe -r hp_omen_extra 2>/dev/null || true
+    modprobe -r hp_wmi 2>/dev/null || true
+    if command -v dkms &>/dev/null; then
+        for v in $(dkms status 2>/dev/null | grep -i 'hp-omen-extra' | grep -oP '(?<=hp-omen-extra[/, ])[^,:]+' | tr -d ' ' | sort -u); do
+            [ -z "$v" ] && continue
+            dkms remove -m "hp-omen-extra" -v "$v" --all 2>/dev/null || true
+        done
+    fi
+    rm -rf /usr/src/hp-omen-extra-* 2>/dev/null || true
+    rm -f /etc/modules-load.d/hp-omen-extra.conf
+    KVER=$(uname -r)
+    find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" -name 'hp-omen-extra.ko*' -delete 2>/dev/null || true
+    find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" -path '*/updates/*' -name 'hp-wmi.ko*' -delete 2>/dev/null || true
+    depmod -a 2>/dev/null || true
+    modprobe hp_wmi 2>/dev/null || true
 
     echo "Uninstallation complete!"
 }

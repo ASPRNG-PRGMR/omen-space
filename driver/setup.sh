@@ -14,8 +14,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 MODNAME="hp-omen-extra"
-MODVER=$(grep -oP 'PACKAGE_VERSION="\K[^"]+' dkms.conf 2>/dev/null || echo "1.3.5")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODVER=$(grep -oP 'PACKAGE_VERSION="\K[^"]+' "$SCRIPT_DIR/dkms.conf" 2>/dev/null || echo "1.3.5")
 
 # MOK_DIR — initialised here so it is always defined (avoids unbound variable
 # errors in the MOK_PENDING check when Secure Boot is disabled)
@@ -497,12 +497,20 @@ do_uninstall() {
     modprobe -r hp_wmi          2>/dev/null || true
 
     info "Removing DKMS entry..."
-    if dkms status "$MODNAME/$MODVER" 2>/dev/null | grep -q "$MODNAME"; then
-        dkms remove -m "$MODNAME" -v "$MODVER" --all
-        rm -rf "/usr/src/${MODNAME}-${MODVER}"
-        ok "Uninstalled successfully."
+    local removed_any=false
+    if command -v dkms &>/dev/null; then
+        for v in $(dkms status "$MODNAME" 2>/dev/null | grep -oP "(?<=${MODNAME}[/, ])[^,:]+" | tr -d ' ' | sort -u); do
+            [ -z "$v" ] && continue
+            dkms remove -m "$MODNAME" -v "$v" --all 2>/dev/null || true
+            rm -rf "/usr/src/${MODNAME}-${v}" 2>/dev/null || true
+            removed_any=true
+        done
+    fi
+    rm -rf "/usr/src/${MODNAME}-"* 2>/dev/null || true
+    if $removed_any; then
+        ok "Uninstalled DKMS module(s) successfully."
     else
-        warn "DKMS entry not found. Nothing to remove."
+        warn "DKMS entry not found. Cleaning up module files if present."
     fi
 
     # Remove modules-load.d entry
@@ -511,9 +519,13 @@ do_uninstall() {
     # Remove the modprobe override so the stock hp-wmi is re-enabled
     remove_hpwmi_override
 
-    # Purge any stale .ko files left by previous backup-based installs
+    # Purge any stale .ko files left by previous installs
     info "Cleaning up any stale module files..."
     KVER=$(uname -r)
+    find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" \
+        -name 'hp-omen-extra.ko*' -delete 2>/dev/null || true
+    find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" \
+        -path '*/updates/*' -name 'hp-wmi.ko*' -delete 2>/dev/null || true
 
     # Remove old-style .backup files created by previous installer versions
     while IFS= read -r BU_FILE; do

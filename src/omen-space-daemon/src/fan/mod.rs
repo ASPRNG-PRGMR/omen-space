@@ -453,6 +453,8 @@ impl FanService {
     async fn run_monitor_loop(&self) {
         // Run every 1 second to gather more frequent samples for the 5-second average
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        let mut stall_ticks: u32 = 0;
+        let mut last_stall_alert: Option<std::time::Instant> = None;
 
         loop {
             interval.tick().await;
@@ -487,6 +489,55 @@ impl FanService {
 
             let (mode, curve_json, fans, thermal_active, manual_pct) = {
                 let mut state = self.state.lock().await;
+
+                // Fan-Stall Detection (#301): If temp >= 75°C while all discovered hwmon fans
+                // report 0 RPM for 5 consecutive seconds, trigger an emergency Max Fan kick
+                // and send a critical desktop alert.
+                if temp >= 75.0 && !state.found_fans.is_empty() {
+                    let all_zero = if let Some(ref hwmon) = state.hwmon_path {
+                        state.found_fans.iter().all(|idx| {
+                            std::fs::read_to_string(hwmon.join(format!("fan{}_input", idx)))
+                                .ok()
+                                .and_then(|s| s.trim().parse::<u32>().ok())
+                                .unwrap_or(0) == 0
+                        })
+                    } else {
+                        false
+                    };
+                    if all_zero {
+                        stall_ticks = stall_ticks.saturating_add(1);
+                        let cooldown_ok = last_stall_alert
+                            .map(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+                            .unwrap_or(true);
+                        if stall_ticks >= 5 && cooldown_ok {
+                            last_stall_alert = Some(std::time::Instant::now());
+                            warn!(
+                                "CRITICAL FAN STALL DETECTED: temp is {:.1}°C while all fans read 0 RPM for {}s! Attempting Max Fan kick (#301).",
+                                temp, stall_ticks
+                            );
+                            Self::set_mode_internal(&mut state, "max").await;
+                            let alert_temp = temp as i32;
+                            tokio::spawn(async move {
+                                let (title, msg) = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
+                                    (
+                                        "KRİTİK UYARI: Fan Durması Tespit Edildi!",
+                                        format!("Sıcaklık {}°C iken tüm fanlar 0 RPM bildiriyor! Acil durum maksimum fan komutu gönderildi.", alert_temp),
+                                    )
+                                } else {
+                                    (
+                                        "CRITICAL: Fan Stall Detected!",
+                                        format!("Temperature is {}°C while all fans report 0 RPM! Emergency Max Fan command triggered.", alert_temp),
+                                    )
+                                };
+                                DesktopNotifier::send_notification(title, &msg, 2).await;
+                            });
+                        }
+                    } else {
+                        stall_ticks = 0;
+                    }
+                } else {
+                    stall_ticks = 0;
+                }
                 
                 // Thermal Protection Logic ALWAYS uses raw temp for safety
                 if state.thermal_protection_enabled && temp > THERMAL_PROTECTION_TRIGGER_TEMP && !state.thermal_protection_active {

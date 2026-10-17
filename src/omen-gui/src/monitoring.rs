@@ -517,23 +517,34 @@ fn build_modes_card() -> ModesUI {
     sep2.set_margin_top(6);
     card.append(&sep2);
 
-    let pl = power_lbl.clone();
-    let fl = fan_lbl.clone();
-    glib::spawn_future_local(async move {
-        let power = crate::daemon_client::get_power_profile_async().await
-            .unwrap_or_else(|_| "balanced".to_string());
-        pl.set_label(match power.as_str() {
-            "power-saver" => i18n::t("mode_eco"),
-            "performance" => i18n::t("mode_performance"),
-            _ => i18n::t("mode_balanced"),
-        });
-        let fan = crate::daemon_client::get_fan_mode_async().await
-            .unwrap_or_else(|_| "auto".to_string());
-        fl.set_label(match fan.as_str() {
-            "max"    => i18n::t("fan_max"),
-            "manual" => i18n::t("fan_custom"),
-            _        => i18n::t("fan_auto"),
-        });
+    let refresh_modes = {
+        let pl = power_lbl.clone();
+        let fl = fan_lbl.clone();
+        move || {
+            let pl = pl.clone();
+            let fl = fl.clone();
+            glib::spawn_future_local(async move {
+                let power = crate::daemon_client::get_power_profile_async().await
+                    .unwrap_or_else(|_| "balanced".to_string());
+                pl.set_label(match power.as_str() {
+                    "power-saver" => i18n::t("mode_eco"),
+                    "performance" => i18n::t("mode_performance"),
+                    _ => i18n::t("mode_balanced"),
+                });
+                let fan = crate::daemon_client::get_fan_mode_async().await
+                    .unwrap_or_else(|_| "auto".to_string());
+                fl.set_label(match fan.as_str() {
+                    "max"    => i18n::t("fan_max"),
+                    "manual" => i18n::t("fan_custom"),
+                    _        => i18n::t("fan_auto"),
+                });
+            });
+        }
+    };
+    refresh_modes();
+    glib::timeout_add_local(std::time::Duration::from_secs(3), move || {
+        refresh_modes();
+        glib::ControlFlow::Continue
     });
 
     ModesUI { container: card }
