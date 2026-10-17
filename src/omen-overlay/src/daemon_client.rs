@@ -25,12 +25,25 @@ pub async fn get_conn() -> Result<zbus::Connection, zbus::Error> {
 
 // ── Profile and Fan Control API ──────────────────────────────────────────────
 
-pub async fn set_power_profile(profile: &str) -> Result<String, zbus::Error> {
-    let normalized = match profile.to_lowercase().as_str() {
-        "quiet" | "eco" | "power-saver" | "low-power" => "power-saver",
-        "performance" | "perf" | "max" => "performance",
+pub fn normalize_power_profile(profile: &str) -> &'static str {
+    match profile.trim().to_lowercase().as_str() {
+        "quiet" | "eco" | "power-saver" | "low-power" | "cool" | "sessiz" | "eko"
+        | "silencioso" => "power-saver",
+        "performance" | "perf" | "max" | "performans" | "rendimiento" => "performance",
         _ => "balanced",
-    };
+    }
+}
+
+pub fn normalize_fan_mode(mode: &str) -> &'static str {
+    match mode.trim().to_lowercase().as_str() {
+        "max" | "turbo" | "maksimum" | "máximo" => "max",
+        "custom" | "manual" | "curve" | "özel" | "personalizado" => "custom",
+        _ => "auto",
+    }
+}
+
+pub async fn set_power_profile(profile: &str) -> Result<String, zbus::Error> {
+    let normalized = normalize_power_profile(profile);
     let conn = get_conn().await?;
     let proxy = PowerProxy::new(&conn).await?;
     proxy.set_power_profile(normalized).await
@@ -42,10 +55,10 @@ pub async fn get_power_profile() -> String {
             if let Ok(json_str) = proxy.get_power_profile().await {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                     if let Some(active) = val.get("active").and_then(|v| v.as_str()) {
-                        return active.to_string();
+                        return normalize_power_profile(active).to_string();
                     }
                 }
-                return json_str;
+                return normalize_power_profile(&json_str).to_string();
             }
         }
     }
@@ -53,11 +66,7 @@ pub async fn get_power_profile() -> String {
 }
 
 pub async fn set_fan_mode(mode: &str) -> Result<String, zbus::Error> {
-    let normalized = match mode.to_lowercase().as_str() {
-        "max" | "turbo" => "max",
-        "custom" | "manual" => "custom",
-        _ => "auto",
-    };
+    let normalized = normalize_fan_mode(mode);
     let conn = get_conn().await?;
     let proxy = FanProxy::new(&conn).await?;
     proxy.set_fan_mode(normalized).await
@@ -67,7 +76,7 @@ pub async fn get_fan_mode() -> String {
     if let Ok(conn) = get_conn().await {
         if let Ok(proxy) = FanProxy::new(&conn).await {
             if let Ok(mode) = proxy.get_fan_mode().await {
-                return mode.trim().to_string();
+                return normalize_fan_mode(&mode).to_string();
             }
         }
     }
@@ -122,3 +131,35 @@ where
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_fan_mode, normalize_power_profile};
+
+    #[test]
+    fn normalizes_power_profiles_across_languages() {
+        for s in ["power-saver", "quiet", "eco", "low-power", "Sessiz", "Eko", "Silencioso"] {
+            assert_eq!(normalize_power_profile(s), "power-saver", "failed for {s}");
+        }
+        for s in ["balanced", "default", "Varsayılan", "Dengeli", "Predeterminado", "Equilibrado"] {
+            assert_eq!(normalize_power_profile(s), "balanced", "failed for {s}");
+        }
+        for s in ["performance", "perf", "max", "Performans", "Rendimiento"] {
+            assert_eq!(normalize_power_profile(s), "performance", "failed for {s}");
+        }
+    }
+
+    #[test]
+    fn normalizes_fan_modes_across_languages() {
+        for s in ["auto", "ec", "default", "Otomatik", "Automático"] {
+            assert_eq!(normalize_fan_mode(s), "auto", "failed for {s}");
+        }
+        for s in ["max", "turbo", "Maksimum", "Máximo"] {
+            assert_eq!(normalize_fan_mode(s), "max", "failed for {s}");
+        }
+        for s in ["custom", "manual", "curve", "Özel", "Personalizado"] {
+            assert_eq!(normalize_fan_mode(s), "custom", "failed for {s}");
+        }
+    }
+}
+

@@ -68,7 +68,7 @@ impl OverlayWindow {
             .css_classes(["omen-overlay-window"])
             .build();
 
-        let active_power = Rc::new(RefCell::new("Default".to_string()));
+        let active_power = Rc::new(RefCell::new("balanced".to_string()));
         let active_fan = Rc::new(RefCell::new("auto".to_string()));
         let power_btns = Rc::new(RefCell::new(Vec::new()));
         let fan_btns = Rc::new(RefCell::new(Vec::new()));
@@ -140,14 +140,14 @@ impl OverlayWindow {
             .build();
 
         let power_modes = [
-            (crate::i18n::t("quiet"), "1", crate::i18n::t("eco_silent"), "active-eco", "power-profile-power-saver-symbolic"),
-            (crate::i18n::t("default"), "2", crate::i18n::t("balanced"), "active", "power-profile-balanced-symbolic"),
-            (crate::i18n::t("performance"), "3", crate::i18n::t("max_power"), "active-perf", "power-profile-performance-symbolic"),
+            ("power-saver", crate::i18n::t("quiet"), "1", crate::i18n::t("eco_silent"), "active-eco", "power-profile-power-saver-symbolic"),
+            ("balanced", crate::i18n::t("default"), "2", crate::i18n::t("balanced"), "active", "power-profile-balanced-symbolic"),
+            ("performance", crate::i18n::t("performance"), "3", crate::i18n::t("max_power"), "active-perf", "power-profile-performance-symbolic"),
         ];
 
         let mut p_btns = Vec::new();
 
-        for (name, key_shortcut, desc, _active_class, icon_name) in power_modes.iter() {
+        for (mode_key, name, key_shortcut, desc, _active_class, icon_name) in power_modes.iter() {
             let btn = gtk::Button::builder()
                 .css_classes(["mode-btn"])
                 .build();
@@ -193,8 +193,8 @@ impl OverlayWindow {
 
             btn.set_child(Some(&inner));
 
-            let p_name = name.to_string();
-            p_btns.push((p_name, btn.clone()));
+            let p_key = mode_key.to_string();
+            p_btns.push((p_key, btn.clone()));
             perf_grid.append(&btn);
         }
 
@@ -369,6 +369,7 @@ impl OverlayWindow {
         });
 
         overlay.apply_position(&cfg);
+        overlay.update_button_states();
         overlay.refresh_initial_state();
         overlay.setup_interactions();
         overlay
@@ -404,15 +405,15 @@ impl OverlayWindow {
 
             match key_val.as_str() {
                 "1" | "kp_1" => {
-                    this.select_power_profile("Quiet");
+                    this.select_power_profile("power-saver");
                     glib::Propagation::Stop
                 }
                 "2" | "kp_2" => {
-                    this.select_power_profile("Default");
+                    this.select_power_profile("balanced");
                     glib::Propagation::Stop
                 }
                 "3" | "kp_3" => {
-                    this.select_power_profile("Performance");
+                    this.select_power_profile("performance");
                     glib::Propagation::Stop
                 }
                 "q" => {
@@ -435,10 +436,11 @@ impl OverlayWindow {
     }
 
     pub fn select_power_profile(self: &Rc<Self>, profile: &str) {
-        *self.active_power.borrow_mut() = profile.to_string();
+        let normalized = daemon_client::normalize_power_profile(profile);
+        *self.active_power.borrow_mut() = normalized.to_string();
         self.update_button_states();
 
-        let prof = profile.to_string();
+        let prof = normalized.to_string();
         let rt = daemon_client::get_runtime();
         rt.spawn(async move {
             let _ = daemon_client::set_power_profile(&prof).await;
@@ -446,10 +448,11 @@ impl OverlayWindow {
     }
 
     pub fn select_fan_mode(self: &Rc<Self>, mode: &str) {
-        *self.active_fan.borrow_mut() = mode.to_string();
+        let normalized = daemon_client::normalize_fan_mode(mode);
+        *self.active_fan.borrow_mut() = normalized.to_string();
         self.update_button_states();
 
-        let m = mode.to_string();
+        let m = normalized.to_string();
         let rt = daemon_client::get_runtime();
         rt.spawn(async move {
             let _ = daemon_client::set_fan_mode(&m).await;
@@ -457,41 +460,30 @@ impl OverlayWindow {
     }
 
     pub fn update_button_states(&self) {
-        let cur_power = self.active_power.borrow().clone().to_lowercase();
-        for (name, btn) in self.power_btns.borrow().iter() {
+        let cur_power = daemon_client::normalize_power_profile(&self.active_power.borrow());
+        for (mode_key, btn) in self.power_btns.borrow().iter() {
             btn.remove_css_class("active");
             btn.remove_css_class("active-perf");
             btn.remove_css_class("active-eco");
 
-            let n_lower = name.to_lowercase();
-            let is_match = n_lower == cur_power ||
-                (n_lower == "default" && (cur_power == "balanced" || cur_power == "default")) ||
-                (n_lower == "quiet" && (cur_power == "quiet" || cur_power == "eco" || cur_power == "power-saver" || cur_power == "low-power")) ||
-                (n_lower == "performance" && (cur_power == "performance" || cur_power == "perf" || cur_power == "max"));
-
-            if is_match {
-                if n_lower == "performance" {
-                    btn.add_css_class("active-perf");
-                } else if n_lower == "quiet" {
-                    btn.add_css_class("active-eco");
-                } else {
-                    btn.add_css_class("active");
+            let btn_power = daemon_client::normalize_power_profile(mode_key);
+            if btn_power == cur_power {
+                match btn_power {
+                    "performance" => btn.add_css_class("active-perf"),
+                    "power-saver" => btn.add_css_class("active-eco"),
+                    _ => btn.add_css_class("active"),
                 }
             }
         }
 
-        let cur_fan = self.active_fan.borrow().clone().to_lowercase();
-        for (mode, btn) in self.fan_btns.borrow().iter() {
+        let cur_fan = daemon_client::normalize_fan_mode(&self.active_fan.borrow());
+        for (mode_key, btn) in self.fan_btns.borrow().iter() {
             btn.remove_css_class("active");
             btn.remove_css_class("active-turbo");
 
-            let m_lower = mode.to_lowercase();
-            let is_match = m_lower == cur_fan ||
-                (m_lower == "custom" && (cur_fan == "manual" || cur_fan == "custom" || cur_fan == "curve")) ||
-                (m_lower == "auto" && (cur_fan == "auto" || cur_fan == "ec" || cur_fan == "default"));
-
-            if is_match {
-                if m_lower == "max" {
+            let btn_fan = daemon_client::normalize_fan_mode(mode_key);
+            if btn_fan == cur_fan {
+                if btn_fan == "max" {
                     btn.add_css_class("active-turbo");
                 } else {
                     btn.add_css_class("active");

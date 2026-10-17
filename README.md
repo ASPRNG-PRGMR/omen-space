@@ -6,7 +6,7 @@
   **The ultimate, lightweight Linux control center for HP Omen, Victus & Transcend.**  
   *Written entirely in Rust for zero-overhead, native GTK4 performance.*
 
-  [![Version](https://img.shields.io/badge/Release-v2.1.4-red.svg?style=flat-square)](https://github.com/yunusemreyl/omen-space/releases)
+  [![Version](https://img.shields.io/badge/Release-v2.1.7-red.svg?style=flat-square)](https://github.com/yunusemreyl/omen-space/releases)
   [![License](https://img.shields.io/badge/License-GPL%203.0-green.svg?style=flat-square)](LICENSE)
   [![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg?style=flat-square)]()
   [![Built with Rust](https://img.shields.io/badge/Language-Rust-orange.svg?style=flat-square)]()
@@ -22,12 +22,12 @@
 
 OMEN Space provides everything you need to unlock the full potential of your laptop on Linux, without the bloat.
 
-- 🎛️ **Fan & Thermal Mastery:** Create custom Fan curve splines for near-silent operation without thermal throttling. Includes a dedicated **Fan Cleaning Mode**.
-- 🎮 **Quick HUD Overlay (Shift+F2):** A small floating GTK4 panel for switching fan and power modes without opening the main app. It needs `omen-tray` running and opens as a normal window, so on Wayland it can sit behind a fullscreen game (see [Known Issues](knownissues.md)).
-- ⚡ **Performance Profiles:** Seamlessly switch between `power-saver`, `balanced`, and `performance` ACPI/WMI modes.
-- 🚀 **Ryzen SMU & Undervolting:** Direct MSR-based undervolting, TCC offset control, GPU TGP limits, and AMD Ryzen SMU tuning.
+- 🎛️ **Fan & Thermal Mastery:** Create custom fan curve splines for near-silent operation without thermal throttling. Includes a dedicated **Fan Cleaning Mode** and **Automatic Fan-Stall Detection** (emergency Max Fan recovery & desktop alert if fans stall under high temperatures).
+- 🎮 **Quick HUD Overlay (Shift+F2):** A floating GTK4 panel for switching fan and power modes with live CPU/GPU/Fan/RAM telemetry without opening the main app. It needs `omen-tray` running and opens as a normal window, so on Wayland it can sit behind a fullscreen game (see [Known Issues](knownissues.md)).
+- ⚡ **Performance Profiles:** Seamlessly switch between `power-saver`, `balanced`, and `performance` ACPI/WMI modes with active EC keep-alive protection and automatic WMI `WMBA` → `WMAA` fallback across OMEN 15/16/17, OMEN Max 16, Transcend 14, and Victus 15/16 series.
+- 🚀 **Intel RAPL, Ryzen SMU & Undervolting:** Intel RAPL PL1/PL2 power limits (up to 150W/200W for HX & Core Ultra processors), direct MSR-based undervolting, TCC offset control, GPU TGP limits, and AMD Ryzen SMU tuning.
 - 🎮 **MUX Switch:** Native Optimus / dGPU routing switching for maximum gaming performance.
-- 🌈 **RGB Studio:** Hardware-accelerated 4-Zone or Per-Key keyboard lighting with wave, breathing, cycle, and static effects.
+- 🌈 **RGB Studio:** Hardware-accelerated 4-Zone, Single-Zone, Light Bar, and USB HID Per-Key (`0d62:54bf`) keyboard lighting with wave, breathing, cycle, and static effects.
 - 🔄 **Smart BIOS Checker:** Automatically checks HP servers for your specific motherboard's latest firmware.
 
 ---
@@ -111,9 +111,16 @@ OMEN Space is a complete rewrite of the legacy Python *OmenCtl*, moving to **Rus
 
 - **`omen-space-daemon`**: The backend. Runs as a systemd service (root), managing WMI, ACPI, Sysfs, and MSR interactions over secure D-Bus.
 - **`omen-gui`**: A beautifully fast GTK4 + Libadwaita frontend running in user-space.
-- **`omen-tray`**: A lightweight desktop panel applet for quick profile toggling.
-- **`omen-cli`**: A fast scriptable terminal interface. Now with a HUD command (`omen-cli overlay toggle`).
+- **`omen-overlay`**: The on-demand GTK4 Quick HUD Overlay (`Shift+F2`) for instant profile and fan mode switching.
+- **`omen-tray`**: A lightweight desktop panel applet for quick profile toggling and hotkey handling.
+- **`omen-cli`**: A fast scriptable terminal interface. Includes a HUD command (`omen-cli overlay toggle`).
 - **`hp-omen-extra`**: The underlying DKMS kernel driver extending standard kernel capabilities.
+
+---
+
+## 🌐 Localization
+
+The interface (`omen-gui`, `omen-overlay`, and `omen-tray`) is available in **English, Turkish (Türkçe), and Spanish (Español)**. Change the language anytime under *Settings → Appearance & Language* (or leave it on *Auto* to follow your system locale).
 
 ---
 

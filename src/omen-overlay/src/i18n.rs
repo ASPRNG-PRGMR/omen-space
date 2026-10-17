@@ -22,6 +22,9 @@ fn get_lang() -> String {
                 if lower.starts_with("tr") || lower.contains("tr_tr") || lower.contains("turkish") {
                     return "tr".to_string();
                 }
+                if lower.starts_with("es") || lower.contains("spanish") {
+                    return "es".to_string();
+                }
             }
         }
         return "en".to_string();
@@ -32,28 +35,69 @@ fn get_lang() -> String {
 
 pub fn t(key: &str) -> String {
     let lang = get_lang();
-    let is_tr = lang == "tr";
 
-    match key {
-        "title" => if is_tr { "OMEN HIZLI AYARLAR" } else { "OMEN QUICK CONTROL" },
-        "perf_mode" => if is_tr { "Performans Modu" } else { "Performance Mode" },
-        "quiet" => if is_tr { "Sessiz" } else { "Quiet" },
-        "eco_silent" => if is_tr { "Eko / Sessiz" } else { "Eco / Silent" },
-        "default" => if is_tr { "Varsayılan" } else { "Default" },
-        "balanced" => if is_tr { "Dengeli" } else { "Balanced" },
-        "performance" => if is_tr { "Performans" } else { "Performance" },
-        "max_power" => if is_tr { "Maksimum Güç" } else { "Max Power & Clock" },
-        
-        "fan_mode" => if is_tr { "Fan Modu" } else { "Fan Mode" },
-        "auto" => if is_tr { "Otomatik" } else { "Auto (Dynamic)" },
-        "auto_desc" => if is_tr { "Dinamik soğutma eğrisi" } else { "Adaptive thermal curve" },
-        "max" => if is_tr { "Maksimum" } else { "Max (100% Turbo)" },
-        "max_desc" => if is_tr { "Tam devir soğutma" } else { "Full speed cooling" },
-        "custom" => if is_tr { "Özel" } else { "Custom Preset" },
-        "custom_desc" => if is_tr { "Kullanıcı fan profili" } else { "User curve profile" },
-        
-        "fans" => if is_tr { "FANLAR" } else { "FANS" },
-        "close" => if is_tr { "Kapat" } else { "Close" },
-        _ => key,
-    }.to_string()
+    match lang.as_str() {
+        "tr" => match key {
+            "title" => "OMEN HIZLI AYARLAR",
+            "perf_mode" => "Performans Modu",
+            "quiet" => "Sessiz",
+            "eco_silent" => "Eko / Sessiz",
+            "default" => "Varsayılan",
+            "balanced" => "Dengeli",
+            "performance" => "Performans",
+            "max_power" => "Maksimum Güç",
+            "fan_mode" => "Fan Modu",
+            "auto" => "Otomatik",
+            "auto_desc" => "Dinamik soğutma eğrisi",
+            "max" => "Maksimum",
+            "max_desc" => "Tam devir soğutma",
+            "custom" => "Özel",
+            "custom_desc" => "Kullanıcı fan profili",
+            "fans" => "FANLAR",
+            "close" => "Kapat",
+            _ => key,
+        },
+        "es" => match key {
+            "title" => "CONTROL RÁPIDO OMEN",
+            "perf_mode" => "Modo de Rendimiento",
+            "quiet" => "Silencioso",
+            "eco_silent" => "Eco / Silencioso",
+            "default" => "Predeterminado",
+            "balanced" => "Equilibrado",
+            "performance" => "Rendimiento",
+            "max_power" => "Máxima Potencia",
+            "fan_mode" => "Modo de Ventilador",
+            "auto" => "Automático",
+            "auto_desc" => "Curva térmica adaptativa",
+            "max" => "Máximo (100% Turbo)",
+            "max_desc" => "Refrigeración a máxima velocidad",
+            "custom" => "Personalizado",
+            "custom_desc" => "Perfil de curva de usuario",
+            "fans" => "VENTILADORES",
+            "close" => "Cerrar",
+            _ => key,
+        },
+        _ => match key {
+            "title" => "OMEN QUICK CONTROL",
+            "perf_mode" => "Performance Mode",
+            "quiet" => "Quiet",
+            "eco_silent" => "Eco / Silent",
+            "default" => "Default",
+            "balanced" => "Balanced",
+            "performance" => "Performance",
+            "max_power" => "Max Power & Clock",
+            "fan_mode" => "Fan Mode",
+            "auto" => "Auto (Dynamic)",
+            "auto_desc" => "Adaptive thermal curve",
+            "max" => "Max (100% Turbo)",
+            "max_desc" => "Full speed cooling",
+            "custom" => "Custom Preset",
+            "custom_desc" => "User curve profile",
+            "fans" => "FANS",
+            "close" => "Close",
+            _ => key,
+        },
+    }
+    .to_string()
 }
+

@@ -6,7 +6,7 @@
   **El centro de control para Linux, ligero y completo, para HP Omen, Victus y Transcend.**  
   *Escrito íntegramente en Rust para un rendimiento nativo con GTK4 y sin sobrecarga.*
 
-  [![Version](https://img.shields.io/badge/Release-v2.0.8-red.svg?style=flat-square)](https://github.com/yunusemreyl/omen-space/releases)
+  [![Version](https://img.shields.io/badge/Release-v2.1.7-red.svg?style=flat-square)](https://github.com/yunusemreyl/omen-space/releases)
   [![License](https://img.shields.io/badge/License-GPL%203.0-green.svg?style=flat-square)](LICENSE)
   [![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg?style=flat-square)]()
   [![Built with Rust](https://img.shields.io/badge/Language-Rust-orange.svg?style=flat-square)]()
@@ -20,12 +20,12 @@
 
 OMEN Space ofrece todo lo necesario para aprovechar al máximo tu portátil en Linux, sin añadidos innecesarios.
 
-- 🎛️ **Control de ventiladores y temperatura:** crea curvas de ventilador personalizadas para un funcionamiento casi silencioso sin limitación térmica. Incluye un **modo de limpieza de ventiladores**.
-- 🎮 **Superposición HUD rápida (Shift+F2):** HUD flotante GTK4 sin latencia dentro del juego para cambiar al instante los modos de ventilador y energía sin perder la concentración.
-- ⚡ **Perfiles de rendimiento:** cambia entre los modos ACPI/WMI `power-saver`, `balanced` y `performance`.
-- 🚀 **Ryzen SMU y undervolt:** undervolt directo por MSR, control del desfase TCC, límites de TGP de la GPU y ajuste del SMU de AMD Ryzen.
+- 🎛️ **Control de ventiladores y temperatura:** crea curvas de ventilador personalizadas para un funcionamiento casi silencioso sin limitación térmica. Incluye un **modo de limpieza de ventiladores** y **detección automática de parada de ventiladores**.
+- 🎮 **Superposición HUD rápida (Shift+F2):** HUD flotante GTK4 para cambiar al instante los modos de ventilador y energía con telemetría en vivo sin abrir la aplicación principal.
+- ⚡ **Perfiles de rendimiento:** cambia entre los modos ACPI/WMI `power-saver`, `balanced` y `performance` con protección activa keep-alive de EC y respaldo automático `WMBA` → `WMAA`.
+- 🚀 **Intel RAPL, Ryzen SMU y undervolt:** límites PL1/PL2 de Intel RAPL (hasta 150W/200W en procesadores HX y Core Ultra), undervolt directo por MSR, control del desfase TCC, límites de TGP de la GPU y ajuste del SMU de AMD Ryzen.
 - 🎮 **Interruptor MUX:** cambio nativo de Optimus / enrutamiento de la dGPU para el máximo rendimiento en juegos.
-- 🌈 **RGB Studio:** iluminación de teclado de 4 zonas o por tecla, con efectos de onda, respiración, ciclo y estático.
+- 🌈 **RGB Studio:** iluminación de teclado de 4 zonas, zona única, barra de luz o por tecla USB HID (`0d62:54bf`), con efectos de onda, respiración, ciclo y estático.
 - 🔄 **Comprobador inteligente de BIOS:** consulta los servidores de HP para buscar el firmware más reciente de tu placa.
 
 ---
@@ -111,6 +111,7 @@ OMEN Space es una reescritura completa del antiguo *OmenCtl* en Python, ahora en
 
 - **`omen-space-daemon`**: el backend. Se ejecuta como servicio de systemd (root) y gestiona las interacciones con WMI, ACPI, Sysfs y MSR a través de D-Bus.
 - **`omen-gui`**: un frontend GTK4 + Libadwaita muy rápido, que se ejecuta en espacio de usuario.
+- **`omen-overlay`**: la superposición HUD rápida (`Shift+F2`) bajo demanda en GTK4.
 - **`omen-tray`**: un applet ligero para el panel del escritorio que permite cambiar rápido de perfil.
 - **`omen-cli`**: una interfaz de terminal rápida y programable, con un comando para el HUD (`omen-cli overlay toggle`).
 - **`hp-omen-extra`**: el controlador de kernel DKMS que amplía las capacidades estándar del kernel.
