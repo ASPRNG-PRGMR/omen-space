@@ -455,6 +455,8 @@ impl FanService {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
         let mut stall_ticks: u32 = 0;
         let mut last_stall_alert: Option<std::time::Instant> = None;
+        let mut last_unreadable_warn: Option<std::time::Instant> = None;
+        let mut last_thermal_alert: Option<std::time::Instant> = None;
 
         loop {
             interval.tick().await;
@@ -490,21 +492,45 @@ impl FanService {
             let (mode, curve_json, fans, thermal_active, manual_pct) = {
                 let mut state = self.state.lock().await;
 
-                // Fan-Stall Detection (#301): If temp >= 75°C while all discovered hwmon fans
-                // report 0 RPM for 5 consecutive seconds, trigger an emergency Max Fan kick
-                // and send a critical desktop alert.
+                // Fan-Stall Detection (#301 / #311): If temp >= 75°C while all discovered hwmon fans
+                // explicitly report Some(0) RPM for 5 consecutive seconds, trigger an emergency Max Fan kick
+                // and send a critical desktop alert. Missing/unreadable telemetry (None) does NOT count as 0 RPM.
                 if temp >= 75.0 && !state.found_fans.is_empty() {
-                    let all_zero = if let Some(ref hwmon) = state.hwmon_path {
-                        state.found_fans.iter().all(|idx| {
-                            std::fs::read_to_string(hwmon.join(format!("fan{}_input", idx)))
+                    let (all_confirmed_zero, any_unreadable) = if let Some(ref hwmon) = state.hwmon_path {
+                        let mut all_zero = true;
+                        let mut unreadable = false;
+                        for idx in &state.found_fans {
+                            match std::fs::read_to_string(hwmon.join(format!("fan{}_input", idx)))
                                 .ok()
                                 .and_then(|s| s.trim().parse::<u32>().ok())
-                                .unwrap_or(0) == 0
-                        })
+                            {
+                                Some(0) => {}
+                                Some(_) => {
+                                    all_zero = false;
+                                }
+                                None => {
+                                    all_zero = false;
+                                    unreadable = true;
+                                }
+                            }
+                        }
+                        (all_zero, unreadable)
                     } else {
-                        false
+                        (false, true)
                     };
-                    if all_zero {
+                    if any_unreadable {
+                        stall_ticks = 0;
+                        let warn_ok = last_unreadable_warn
+                            .map(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+                            .unwrap_or(true);
+                        if warn_ok {
+                            last_unreadable_warn = Some(std::time::Instant::now());
+                            warn!(
+                                "Fan telemetry unavailable while temp is {:.1}°C (fan*_input unreadable); skipping stall kick (#311).",
+                                temp
+                            );
+                        }
+                    } else if all_confirmed_zero {
                         stall_ticks = stall_ticks.saturating_add(1);
                         let cooldown_ok = last_stall_alert
                             .map(|t| t.elapsed() >= std::time::Duration::from_secs(60))
@@ -537,6 +563,31 @@ impl FanService {
                     }
                 } else {
                     stall_ticks = 0;
+                }
+
+                // 90°C Thermal Warning Notification (#313): independent of 95°C Max-Fan Thermal Protection
+                if temp >= 90.0 && temp <= THERMAL_PROTECTION_TRIGGER_TEMP {
+                    let cooldown_ok = last_thermal_alert
+                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(120))
+                        .unwrap_or(true);
+                    if cooldown_ok && DesktopNotifier::are_thermal_alerts_enabled() {
+                        last_thermal_alert = Some(std::time::Instant::now());
+                        let alert_temp = temp as i32;
+                        tokio::spawn(async move {
+                            let (title, msg) = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
+                                (
+                                    "Yüksek Sıcaklık Uyarısı",
+                                    format!("CPU/GPU sıcaklığı {}°C seviyesine ulaştı.", alert_temp),
+                                )
+                            } else {
+                                (
+                                    "High Temperature Warning",
+                                    format!("CPU/GPU temperature reached {}°C.", alert_temp),
+                                )
+                            };
+                            DesktopNotifier::send_notification(title, &msg, 1).await;
+                        });
+                    }
                 }
                 
                 // Thermal Protection Logic ALWAYS uses raw temp for safety

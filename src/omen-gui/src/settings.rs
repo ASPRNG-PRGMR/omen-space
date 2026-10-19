@@ -14,6 +14,7 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
     let mut init_startup_profile = 0u32;
     let mut init_battery_care = false;
     let mut init_thermal_alerts = true;
+    let mut init_thermal_prot = true;
     let mut init_zone_override = 0u32;
     let mut init_appearance_mode = 0u32;
     
@@ -30,6 +31,7 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
                 if let Some(sp) = json.get("startup_profile").and_then(|v| v.as_u64()) { init_startup_profile = sp as u32; }
                 if let Some(bc) = json.get("battery_care").and_then(|v| v.as_bool()) { init_battery_care = bc; }
                 if let Some(ta) = json.get("thermal_alerts").and_then(|v| v.as_bool()) { init_thermal_alerts = ta; }
+                if let Some(tp) = json.get("thermal_protection").and_then(|v| v.as_bool()) { init_thermal_prot = tp; }
                 if let Some(zo) = json.get("zone_override").and_then(|v| v.as_u64()) { init_zone_override = zo as u32; }
                 if let Some(am) = json.get("appearance_mode").and_then(|v| v.as_u64()) { init_appearance_mode = am as u32; }
                 if let Some(lb) = json.get("lightbar_enabled").and_then(|v| v.as_bool()) { init_lightbar = lb; }
@@ -186,6 +188,35 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
     heartbeat_row.add_suffix(&hb_spin);
     daemon_group.add(&heartbeat_row);
 
+    // Keep Settings daemon status badge synchronized via status subscription + heartbeat interval (#313)
+    {
+        let badge_sub = status_badge.clone();
+        crate::daemon_client::subscribe_daemon_status(move |status| {
+            use crate::daemon_client::DaemonStatus;
+            let alive = status == DaemonStatus::Online;
+            badge_sub.set_label(if alive { i18n::t("connected") } else { i18n::t("disconnected") });
+            badge_sub.set_css_classes(if alive { &["badge-ok"] } else { &["badge-warn"] });
+        });
+
+        let badge_hb = status_badge.clone();
+        let hb_spin_poll = hb_spin.clone();
+        glib::spawn_future_local(async move {
+            loop {
+                let secs = hb_spin_poll.value().clamp(5.0, 120.0) as u64;
+                glib::timeout_future_seconds(secs as u32).await;
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                crate::daemon_client::get_runtime().spawn(async move {
+                    let alive = crate::daemon_client::ping_daemon_sync();
+                    let _ = tx.send(alive);
+                });
+                if let Ok(alive) = rx.await {
+                    badge_hb.set_label(if alive { i18n::t("connected") } else { i18n::t("disconnected") });
+                    badge_hb.set_css_classes(if alive { &["badge-ok"] } else { &["badge-warn"] });
+                }
+            }
+        });
+    }
+
     let autostart_row = adw::SwitchRow::builder()
         .title(i18n::t("autostart"))
         .subtitle(i18n::t("autostart_sub"))
@@ -228,6 +259,13 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
     thermal_row.set_active(init_thermal_alerts);
     perf_group.add(&thermal_row);
 
+    let thermal_prot_row = adw::SwitchRow::builder()
+        .title(i18n::t("thermal_prot_title"))
+        .subtitle(i18n::t("thermal_prot_sub"))
+        .build();
+    thermal_prot_row.set_active(init_thermal_prot);
+    perf_group.add(&thermal_prot_row);
+
     page.append(&perf_group);
 
 
@@ -237,6 +275,7 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
     let sm_row_clone = startup_mode_row.clone();
     let bat_row_clone = battery_row.clone();
     let thm_row_clone = thermal_row.clone();
+    let thm_prot_clone = thermal_prot_row.clone();
     let zone_row_clone = zone_override_row.clone();
     let lb_row_clone = lightbar_row.clone();
 
@@ -246,6 +285,7 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
         let sp = sm_row_clone.selected();
         let bc = bat_row_clone.is_active();
         let ta = thm_row_clone.is_active();
+        let tp = thm_prot_clone.is_active();
         let zo = zone_row_clone.selected();
         let lb = lb_row_clone.is_active();
         if let Ok(home) = std::env::var("HOME") {
@@ -258,6 +298,7 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
                 "startup_profile": sp,
                 "battery_care": bc,
                 "thermal_alerts": ta,
+                "thermal_protection": tp,
                 "zone_override": zo,
                 "lightbar_enabled": lb
             });
@@ -282,8 +323,13 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
     });
     
     let s5 = save_settings_rc.clone();
-    thermal_row.connect_active_notify(move |r| {
+    thermal_row.connect_active_notify(move |_| {
         s5();
+    });
+
+    let s5_prot = save_settings_rc.clone();
+    thermal_prot_row.connect_active_notify(move |r| {
+        s5_prot();
         crate::daemon_client::set_thermal_protection_sync(r.is_active());
     });
     

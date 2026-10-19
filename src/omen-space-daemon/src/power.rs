@@ -127,13 +127,38 @@ struct AppState {
 pub struct PowerService {
     config: Arc<Mutex<PowerConfig>>,
     app_state: Arc<Mutex<AppState>>,
+    boot_pl1_w: u32,
+    boot_pl2_w: u32,
 }
 
 impl PowerService {
+    async fn read_current_rapl_limits() -> (Option<u32>, Option<u32>) {
+        let p1 = sysfs_read_async("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw")
+            .await
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|uw| (uw / 1_000_000) as u32)
+            .filter(|&w| (5..=250).contains(&w));
+        let p2 = sysfs_read_async("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw")
+            .await
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|uw| (uw / 1_000_000) as u32)
+            .filter(|&w| (5..=250).contains(&w));
+        (p1, p2)
+    }
+
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = PowerConfig::load();
         // Detect real hardware profile on start
         config.power_profile = Self::detect_current_profile().await;
+
+        // Capture firmware/boot RAPL PL1 & PL2 BEFORE applying any saved overrides (#311)
+        let (hw_pl1, hw_pl2) = Self::read_current_rapl_limits().await;
+        let boot_pl1_w = hw_pl1.unwrap_or(45);
+        let boot_pl2_w = hw_pl2.unwrap_or(115).max(boot_pl1_w);
+        if !config.pl_enabled {
+            config.pl1_w = boot_pl1_w;
+            config.pl2_w = boot_pl2_w;
+        }
 
         let app_state = Arc::new(Mutex::new(AppState {
             active_app: None,
@@ -144,6 +169,8 @@ impl PowerService {
         let svc = Self {
             config: Arc::new(Mutex::new(config)),
             app_state: app_state.clone(),
+            boot_pl1_w,
+            boot_pl2_w,
         };
 
         // Re-apply saved limits on startup (mirrors Python _apply_power_tuning)
@@ -754,6 +781,8 @@ impl PowerService {
             "tcc_offset": cfg.tcc_offset,
             "pl1_w": real_pl1,
             "pl2_w": real_pl2,
+            "boot_pl1_w": self.boot_pl1_w,
+            "boot_pl2_w": self.boot_pl2_w,
             "pl_enabled": cfg.pl_enabled,
             "gpu_w": cfg.gpu_w,
         });
@@ -808,19 +837,23 @@ impl PowerService {
         }
         let pl2 = pl2.max(pl1); // clamp: pl2 must >= pl1
 
+        let target_pl1 = if enabled { pl1 as u32 } else { self.boot_pl1_w };
+        let target_pl2 = if enabled { pl2 as u32 } else { self.boot_pl2_w };
+
         {
             let mut cfg = self.config.lock().await;
             cfg.pl_enabled = enabled;
-            cfg.pl1_w = pl1 as u32;
-            cfg.pl2_w = pl2 as u32;
+            cfg.pl1_w = target_pl1;
+            cfg.pl2_w = target_pl2;
             cfg.save();
         }
 
-        if enabled {
-            Self::apply_rapl_limits(pl1 as u32, pl2 as u32).await;
-        }
+        Self::apply_rapl_limits(target_pl1, target_pl2).await;
 
-        info!("SetPowerLimits: enabled={}, PL1={}W, PL2={}W", enabled, pl1, pl2);
+        info!(
+            "SetPowerLimits: enabled={}, PL1={}W, PL2={}W",
+            enabled, target_pl1, target_pl2
+        );
         "OK".to_string()
     }
 

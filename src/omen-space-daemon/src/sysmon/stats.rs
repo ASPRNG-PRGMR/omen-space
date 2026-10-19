@@ -186,9 +186,12 @@ pub fn fetch_system_stats() -> SystemStats {
     };
 
     // 2. If NVIDIA is sleeping (D3cold) OR in cooldown, DO NOT TOUCH NVML OR HWMON AT ALL
-    if has_nvidia && (!is_nvidia_awake || in_cooldown) {
+    if has_nvidia && !is_nvidia_awake {
         stats.gpu_temp = 0;
         stats.gpu_pwr = -1.0;
+    } else if has_nvidia && in_cooldown {
+        stats.gpu_temp = 0;
+        stats.gpu_pwr = -2.0;
     } else if is_nvidia_awake {
         // 3. GPU is active AND cooldown expired. Safe to sample NVML for active processes.
         let mut has_active_clients = false;
@@ -219,7 +222,7 @@ pub fn fetch_system_stats() -> SystemStats {
             let mut guard = GPU_IDLE_COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
             stats.gpu_temp = 0;
-            stats.gpu_pwr = -1.0;
+            stats.gpu_pwr = -2.0;
         }
     }
 

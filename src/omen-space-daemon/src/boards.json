@@ -2821,6 +2821,40 @@
             "supports_battery_care": true,
             "linux_assessment": null,
             "notes": "Added for Issue #284 — OMEN by HP Gaming Laptop 17-db0xxx (Ryzen 7 8845HS + RTX 4070)."
+        },
+        {
+            "product_id": "8EEF",
+            "model_name": "OMEN HyperX 16 Gaming Laptop (8EEF)",
+            "model_year": 2025,
+            "family": "OMEN16",
+            "supports_fan_control_wmi": true,
+            "supports_fan_control_ec": false,
+            "supports_fan_curves": true,
+            "supports_independent_fan_curves": true,
+            "supports_rpm_readback": true,
+            "fan_zone_count": 2,
+            "max_fan_speed_percent": 100,
+            "min_fan_speed_percent": 0,
+            "supports_performance_modes": true,
+            "performance_modes": [
+                "Default",
+                "Performance",
+                "Cool"
+            ],
+            "allow_decoupled_wmi_thermal_policy_fallback": false,
+            "has_mux_switch": true,
+            "supports_gpu_power_boost": true,
+            "supports_advanced_optimus": true,
+            "has_keyboard_backlight": true,
+            "has_four_zone_rgb": true,
+            "has_per_key_rgb": false,
+            "has_light_bar": false,
+            "supports_undervolt": false,
+            "supports_tcc_offset": true,
+            "supports_power_limits": true,
+            "supports_battery_care": true,
+            "linux_assessment": null,
+            "notes": "Added for Issue #309 — OMEN HyperX 16 (reversed 4-zone WMI RGB order)."
         }
     ],
     "verified_boards": [
@@ -2889,7 +2923,9 @@
         "8A50",
         "8D87",
         "88ED",
-        "8DD0"
+        "8DD0",
+        "8EDD",
+        "8EEF"
     ],
     "wmaa_abort_prone_boards": [
         "8BCD",

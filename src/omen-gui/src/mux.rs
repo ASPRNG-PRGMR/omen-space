@@ -51,6 +51,26 @@ fn detect_active_display_gpu() -> (String, bool, String, String) {
     (format!("eDP-1 → {} (Hybrid)", igpu_name), false, gpu_name, igpu_name)
 }
 
+fn read_firmware_mux_mode_sync() -> Option<String> {
+    let raw = fs::read_to_string("/sys/devices/platform/hp-wmi/gpu_mux_mode").ok()?;
+    match raw.trim() {
+        "0" | "hybrid" => Some("hybrid".to_string()),
+        "1" | "discrete" => Some("discrete".to_string()),
+        "2" | "advanced" | "optimus" => Some("advanced".to_string()),
+        "3" | "integrated" => Some("integrated".to_string()),
+        _ => None,
+    }
+}
+
+fn format_mux_mode_label(mode: &str) -> String {
+    match mode {
+        "discrete" => "Discrete (dGPU)".to_string(),
+        "advanced" => "Advanced Optimus (Dynamic)".to_string(),
+        "integrated" => "Integrated (iGPU)".to_string(),
+        _ => "Hybrid (MSHybrid)".to_string(),
+    }
+}
+
 pub fn build_page() -> gtk::Box {
     let page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -59,6 +79,8 @@ pub fn build_page() -> gtk::Box {
 
     let drv_version = get_nvidia_driver_version();
     let (disp_info, is_discrete_active, gpu_name, igpu_name) = detect_active_display_gpu();
+    let initial_fw_mode = read_firmware_mux_mode_sync()
+        .unwrap_or_else(|| if is_discrete_active { "discrete".to_string() } else { "hybrid".to_string() });
 
     // ── Header ───────────────────────────────────────────────
     let hdr = gtk::Box::builder()
@@ -78,7 +100,7 @@ pub fn build_page() -> gtk::Box {
         .build());
     page.append(&hdr);
 
-    // ── 2 Main Selection Cards ────────────────────────────────
+    // ── 3 Main Selection Cards ────────────────────────────────
     let modes_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(16)
@@ -111,10 +133,10 @@ pub fn build_page() -> gtk::Box {
 
     btn_discrete.set_group(Some(&btn_hybrid));
     btn_advanced.set_group(Some(&btn_hybrid));
-    if is_discrete_active {
-        btn_discrete.set_active(true);
-    } else {
-        btn_hybrid.set_active(true);
+    match initial_fw_mode.as_str() {
+        "discrete" => btn_discrete.set_active(true),
+        "advanced" => btn_advanced.set_active(true),
+        _ => btn_hybrid.set_active(true),
     }
 
     modes_box.append(&wrap_hybrid);
@@ -173,6 +195,18 @@ pub fn build_page() -> gtk::Box {
         .title(i18n::t("gpu_details_group"))
         .build();
 
+    let fw_mode_row = adw::ActionRow::builder()
+        .title(i18n::t("mux_fw_mode_row"))
+        .subtitle(i18n::t("mux_fw_mode_sub"))
+        .build();
+    let fw_mode_val = gtk::Label::builder()
+        .label(format_mux_mode_label(&initial_fw_mode))
+        .css_classes(if initial_fw_mode == "discrete" { ["badge-warn"] } else { ["badge-ok"] })
+        .valign(gtk::Align::Center)
+        .build();
+    fw_mode_row.add_suffix(&fw_mode_val);
+    info_group.add(&fw_mode_row);
+
     let disp_row = adw::ActionRow::builder()
         .title(i18n::t("disp_out_row"))
         .subtitle(i18n::t("disp_out_sub"))
@@ -213,59 +247,97 @@ pub fn build_page() -> gtk::Box {
 
     page.append(&info_group);
 
+    let updating_ui = std::rc::Rc::new(std::cell::Cell::new(false));
+    let boot_fw_mode = std::rc::Rc::new(std::cell::RefCell::new(initial_fw_mode));
+
     // Wire MUX toggles to daemon
     let w_c = warn_card.clone();
-    let d_val = disp_val.clone();
-    let gpu_n1 = gpu_name.clone();
+    let fw_val1 = fw_mode_val.clone();
+    let upd1 = updating_ui.clone();
+    let boot_m1 = boot_fw_mode.clone();
     btn_discrete.connect_toggled(move |btn| {
-        if btn.is_active() {
+        if btn.is_active() && !upd1.get() {
             crate::daemon_client::set_gpu_mode_sync("discrete".to_string());
-            if !is_discrete_active {
-                w_c.set_visible(true);
-            }
-            d_val.set_label(&format!("eDP-1 → {} (Discrete)", gpu_n1));
-            d_val.set_css_classes(&["badge-warn"]);
+            let pending = *boot_m1.borrow() != "discrete";
+            w_c.set_visible(pending);
+            fw_val1.set_label(if pending {
+                "Discrete (dGPU · Pending Reboot)"
+            } else {
+                "Discrete (dGPU)"
+            });
+            fw_val1.set_css_classes(&["badge-warn"]);
         }
     });
 
     let w_c2 = warn_card.clone();
-    let d_val2 = disp_val.clone();
-    let igpu_n1 = igpu_name.clone();
+    let fw_val2 = fw_mode_val.clone();
+    let upd2 = updating_ui.clone();
+    let boot_m2 = boot_fw_mode.clone();
     btn_hybrid.connect_toggled(move |btn| {
-        if btn.is_active() {
+        if btn.is_active() && !upd2.get() {
             crate::daemon_client::set_gpu_mode_sync("hybrid".to_string());
-            if is_discrete_active {
-                w_c2.set_visible(true);
-            }
-            d_val2.set_label(&format!("eDP-1 → {} (Hybrid)", igpu_n1));
-            d_val2.set_css_classes(&["badge-ok"]);
+            let pending = *boot_m2.borrow() != "hybrid";
+            w_c2.set_visible(pending);
+            fw_val2.set_label(if pending {
+                "Hybrid (MSHybrid · Pending Reboot)"
+            } else {
+                "Hybrid (MSHybrid)"
+            });
+            fw_val2.set_css_classes(&["badge-ok"]);
         }
     });
 
     let w_c3 = warn_card.clone();
-    let d_val3 = disp_val.clone();
+    let fw_val3 = fw_mode_val.clone();
+    let upd3 = updating_ui.clone();
+    let boot_m3 = boot_fw_mode.clone();
     btn_advanced.connect_toggled(move |btn| {
-        if btn.is_active() {
+        if btn.is_active() && !upd3.get() {
             crate::daemon_client::set_gpu_mode_sync("advanced".to_string());
-            w_c3.set_visible(true);
-            d_val3.set_label(&format!("eDP-1 → {} (Advanced)", "Dynamic"));
-            d_val3.set_css_classes(&["badge-ok"]);
+            let pending = *boot_m3.borrow() != "advanced";
+            w_c3.set_visible(pending);
+            fw_val3.set_label(if pending {
+                "Advanced Optimus (Pending Reboot)"
+            } else {
+                "Advanced Optimus (Dynamic)"
+            });
+            fw_val3.set_css_classes(&["badge-ok"]);
         }
     });
 
     let bd_load = btn_discrete.clone();
     let bh_load = btn_hybrid.clone();
     let ba_load = btn_advanced.clone();
+    let fw_val_load = fw_mode_val.clone();
+    let disp_val_load = disp_val.clone();
+    let upd_load = updating_ui.clone();
+    let boot_m_load = boot_fw_mode.clone();
     glib::spawn_future_local(async move {
         if let Ok(json) = crate::daemon_client::get_gpu_info_async().await {
             if let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) {
                 if let Some(mode) = info.get("mode").and_then(|v| v.as_str()) {
+                    upd_load.set(true);
+                    *boot_m_load.borrow_mut() = mode.to_string();
                     if mode == "discrete" {
                         bd_load.set_active(true);
+                        fw_val_load.set_css_classes(&["badge-warn"]);
                     } else if mode == "advanced" {
                         ba_load.set_active(true);
+                        fw_val_load.set_css_classes(&["badge-ok"]);
                     } else if mode == "hybrid" {
                         bh_load.set_active(true);
+                        fw_val_load.set_css_classes(&["badge-ok"]);
+                    }
+                    fw_val_load.set_label(&format_mux_mode_label(mode));
+                    upd_load.set(false);
+                }
+                if let Some(routing) = info.get("routing_mode").and_then(|v| v.as_str()) {
+                    if routing == "discrete" {
+                        disp_val_load.set_label(&format!("eDP-1 → {} (Discrete)", gpu_name));
+                        disp_val_load.set_css_classes(&["badge-warn"]);
+                    } else if routing == "hybrid" || routing == "integrated" {
+                        disp_val_load.set_label(&format!("eDP-1 → {} (Hybrid)", igpu_name));
+                        disp_val_load.set_css_classes(&["badge-ok"]);
                     }
                 }
             }

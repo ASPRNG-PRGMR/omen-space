@@ -44,6 +44,30 @@ struct RgbHardware {
     is_new_driver: bool,
     zone_count: u32,
     available: bool,
+    board_id: String,
+}
+
+pub(crate) fn map_four_zone_index(board_id: &str, zone: usize) -> usize {
+    if matches!(board_id.trim().to_uppercase().as_str(), "8EEF" | "8EDD") {
+        // OMEN HyperX 16 (boards 8EEF / 8EDD) wire their 4-zone WMI buffer in the
+        // reverse order of classic OMEN boards: hw zone0=WASD, zone1=Left,
+        // zone2=Middle, zone3=Right (#309).
+        match zone {
+            0 => 1, // Software Left   -> Hardware Left (1)
+            1 => 2, // Software Middle -> Hardware Middle (2)
+            2 => 3, // Software Right  -> Hardware Right (3)
+            3 => 0, // Software WASD   -> Hardware WASD (0)
+            z => z,
+        }
+    } else {
+        match zone {
+            0 => 2, // Software Left   -> Hardware Left (2)
+            1 => 1, // Software Middle -> Hardware Middle (1)
+            2 => 0, // Software Right  -> Hardware Right (0)
+            3 => 3, // Software WASD   -> Hardware WASD (3)
+            z => z,
+        }
+    }
 }
 
 impl RgbHardware {
@@ -71,17 +95,17 @@ impl RgbHardware {
         let new_path = "/sys/devices/platform/omen-rgb-keyboard/rgb_zones";
         let custom_path = "/sys/devices/platform/hp-omen-extra";
         let hp_path2 = "/sys/devices/platform/hp_omen_extra";
-        let board_id = std::fs::read_to_string("/sys/class/dmi/id/board_name").unwrap_or_default();
+        let board_id = std::fs::read_to_string("/sys/class/dmi/id/board_name").unwrap_or_default().trim().to_uppercase();
         let prod_name = std::fs::read_to_string("/sys/class/dmi/id/product_name").unwrap_or_default();
         let specs = crate::sysmon::get_hardware_specs();
-        let caps = crate::capabilities::detect(board_id.trim(), prod_name.trim(), &specs.cpu_spec);
+        let caps = crate::capabilities::detect(&board_id, prod_name.trim(), &specs.cpu_spec);
         let max_zones = if caps.has_four_zone_rgb { 4 } else { 8 };
 
         if Path::new(new_path).exists() {
             // Count zones for new driver (8 for per-key models, else 4)
             let mut zone_count = if Path::new("/sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone04").exists() { 8 } else { 4 };
             if zone_count > max_zones { zone_count = max_zones; }
-            return Self { driver_path: Some(new_path.to_string()), is_new_driver: true, zone_count, available: true };
+            return Self { driver_path: Some(new_path.to_string()), is_new_driver: true, zone_count, available: true, board_id };
         }
         for p in [custom_path, hp_path2] {
             if Path::new(p).exists() {
@@ -98,49 +122,24 @@ impl RgbHardware {
                 } else if Path::new(&format!("{}/zone4", p)).exists()
                     || Path::new(&format!("{}/zone04", p)).exists() { 8 } else { 4 };
                 if zone_count > max_zones { zone_count = max_zones; }
-                return Self { driver_path: Some(p.to_string()), is_new_driver: false, zone_count, available: true };
+                return Self { driver_path: Some(p.to_string()), is_new_driver: false, zone_count, available: true, board_id };
             }
         }
         // Try keyboard brightness LEDs as fallback
         if let Ok(mut entries) = glob("/sys/class/leds/hp::kbd_backlight*") {
             if let Some(Ok(path)) = entries.next() {
-                return Self { driver_path: Some(path.to_string_lossy().to_string()), is_new_driver: false, zone_count: 4, available: true };
+                return Self { driver_path: Some(path.to_string_lossy().to_string()), is_new_driver: false, zone_count: 4, available: true, board_id };
             }
         }
-        Self { driver_path: None, is_new_driver: false, zone_count: 4, available: false }
+        Self { driver_path: None, is_new_driver: false, zone_count: 4, available: false, board_id }
     }
 
     fn write_zone(&self, zone: usize, hex_color: &str) {
         let Some(ref base) = self.driver_path else { return; };
         if zone > 7 { return; }
 
-        // Hardware zone remap differs by driver generation — the physical
-        // wiring order isn't the same between the new omen-rgb-keyboard
-        // driver and the legacy hp-omen-extra/hp_omen_extra driver, so
-        // each needs its own verified table rather than sharing one.
-        let actual_zone = if self.is_new_driver && self.zone_count == 4 {
-            // omen-rgb-keyboard, 4-zone: the driver only exposes zone00–zone03
-            // (zone_count is 4 precisely because zone04 does not exist), so the
-            // WASD zone lives in zone03 — a write to zone07 would silently no-op.
-            match zone {
-                0 => 2, // Left
-                1 => 1, // Middle
-                2 => 0, // Right
-                _ => 3, // WASD
-            }
-        } else if !self.is_new_driver && self.zone_count == 4 {
-            // hp-omen-extra/hp_omen_extra, 4-zone: empirically verified
-            // against real hardware (hardware zone0=Right, zone1=Middle,
-            // zone2=Left, zone3=WASD) — upstream's 4af2522 dropped this
-            // remap for the legacy driver entirely, which un-inverted
-            // zones for boards whose raw wiring isn't already sequential.
-            match zone {
-                0 => 2, // Software Left   -> Hardware Left (2)
-                1 => 1, // Software Middle -> Hardware Middle (1)
-                2 => 0, // Software Right  -> Hardware Right (0)
-                3 => 3, // Software WASD   -> Hardware WASD (3)
-                z => z,
-            }
+        let actual_zone = if self.zone_count == 4 {
+            map_four_zone_index(&self.board_id, zone)
         } else {
             zone
         };

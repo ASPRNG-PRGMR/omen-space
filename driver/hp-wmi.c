@@ -419,6 +419,15 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C3F")},
 		.driver_data = (void *)&victus_s_thermal_params,
 	},
+	{
+		/* 8EDD / 8EEF: OMEN HyperX 16 Gaming Laptop */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8EDD")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
+	{
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8EEF")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
 	{},
 };
 
@@ -618,6 +627,7 @@ static struct device       *platform_profile_device;
 static struct notifier_block platform_power_source_nb;
 static enum platform_profile_option active_platform_profile;
 static bool platform_profile_support;
+static bool platform_profile_written;
 static bool zero_insize_support;
 
 static bool force_fan_control_support = true;
@@ -669,7 +679,7 @@ struct hp_wmi_hwmon_priv {
 	u8  max_rpm;
 	u8  gpu_delta;
 	u8  mode;
-	u8  prev_mode;
+	s8  prev_mode;
 	u8  pwm;
 	bool fan_speed_available; /* true only when fan table query succeeded */
 	bool uses_victus_s_fan_commands;
@@ -712,8 +722,13 @@ struct victus_s_fan_table {
 /*
  * 90 s delay to prevent the firmware from resetting fan mode after its
  * fixed 120 s timeout.
+ *
+ * When leaving PWM_MODE_MANUAL for PWM_MODE_AUTO on Victus-S / modern OMEN
+ * boards, wait 125 s (> 120 s EC watchdog) before resuming WMI 0x10
+ * keepalives so the EC releases any latched 0x2E manual RPM override (#311).
  */
 #define KEEP_ALIVE_DELAY_SECS 90
+#define VICTUS_S_WATCHDOG_EXPIRY_SECS 125
 
 static inline u8 rpm_to_pwm(u8 rpm, struct hp_wmi_hwmon_priv *priv)
 {
@@ -1091,6 +1106,10 @@ static int hp_wmi_fan_speed_reset(struct hp_wmi_hwmon_priv *priv)
 	if (ret)
 		return ret;
 
+	priv->target_rpms[0] = 0;
+	priv->target_rpms[1] = 0;
+	priv->pwm = 0;
+
 	if (!priv->fan_speed_available)
 		return 0;
 
@@ -1100,20 +1119,37 @@ static int hp_wmi_fan_speed_reset(struct hp_wmi_hwmon_priv *priv)
 	 * at 0 RPM for up to 120 seconds until the internal watchdog times out, leaving
 	 * the fans completely stopped even under heavy load.
 	 *
-	 * To force the EC to instantly release manual override and resume automatic
-	 * fan control without waiting for the watchdog timeout, we re-apply the active
-	 * thermal profile via HPWMI_SET_PERFORMANCE_MODE.
+	 * When leaving PWM_MODE_MANUAL on Victus-S / modern OMEN boards, do NOT call
+	 * hp_wmi_get_fan_count_userdefine_trigger() (WMI 0x10) immediately here, as
+	 * WMI 0x10 re-arms the 120s manual-fan watchdog timer and keeps the last
+	 * 0x2E RPM target latched (#311). Instead, re-apply the thermal profile mode
+	 * directly and let keep_alive_dwork wait VICTUS_S_WATCHDOG_EXPIRY_SECS (125s)
+	 * before resuming periodic keepalives.
 	 */
-	if (is_omen_thermal_profile())
-		platform_profile_omen_set_ec(active_platform_profile);
-	else if (is_victus_thermal_profile())
-		platform_profile_victus_set_ec(active_platform_profile);
-	else if (is_victus_s_thermal_profile())
-		platform_profile_victus_s_set_ec(active_platform_profile);
-	else
-		thermal_profile_set(thermal_profile_get());
+	if (is_omen_thermal_profile()) {
+		ret = platform_profile_omen_set_ec(active_platform_profile);
+	} else if (is_victus_thermal_profile()) {
+		ret = platform_profile_victus_set_ec(active_platform_profile);
+	} else if (is_victus_s_thermal_profile()) {
+		if (priv->prev_mode == PWM_MODE_MANUAL && active_thermal_profile_params) {
+			u8 tp = (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE)
+				? active_thermal_profile_params->performance
+				: (active_platform_profile == PLATFORM_PROFILE_LOW_POWER)
+				  ? active_thermal_profile_params->low_power
+				  : active_thermal_profile_params->balanced;
+			ret = omen_thermal_profile_set(tp);
+			if (ret > 0)
+				ret = 0;
+		} else {
+			ret = platform_profile_victus_s_set_ec(active_platform_profile);
+		}
+	} else {
+		int tp = thermal_profile_get();
 
-	return 0;
+		ret = (tp >= 0) ? thermal_profile_set(tp) : tp;
+	}
+
+	return ret < 0 ? ret : 0;
 }
 
 /*
@@ -2307,6 +2343,7 @@ static int platform_profile_omen_set(PLATFORM_PROFILE_DEV_ARG,
 		return err;
 
 	active_platform_profile = profile;
+	platform_profile_written = true;
 	return 0;
 }
 
@@ -2648,6 +2685,7 @@ static int platform_profile_victus_s_set(PLATFORM_PROFILE_DEV_ARG,
 		return err;
 
 	active_platform_profile = profile;
+	platform_profile_written = true;
 	return 0;
 }
 
@@ -2663,6 +2701,7 @@ static int platform_profile_victus_set(PLATFORM_PROFILE_DEV_ARG,
 		return err;
 
 	active_platform_profile = profile;
+	platform_profile_written = true;
 	return 0;
 }
 
@@ -3142,9 +3181,13 @@ static int hp_wmi_apply_fan_settings(struct hp_wmi_hwmon_priv *priv)
 		 */
 		cancel_delayed_work(&priv->keep_alive_dwork);
 		ret = hp_wmi_fan_speed_max_reset(priv);
-		if (is_victus_s_thermal_profile())
+		if (is_victus_s_thermal_profile()) {
+			unsigned long delay = (priv->prev_mode == PWM_MODE_MANUAL)
+					      ? VICTUS_S_WATCHDOG_EXPIRY_SECS
+					      : KEEP_ALIVE_DELAY_SECS;
 			schedule_delayed_work(&priv->keep_alive_dwork,
-					      secs_to_jiffies(KEEP_ALIVE_DELAY_SECS));
+					      secs_to_jiffies(delay));
+		}
 		break;
 
 	default:
@@ -3452,10 +3495,9 @@ static void hp_wmi_hwmon_keep_alive_handler(struct work_struct *work)
 		    active_thermal_profile_params &&
 		    active_thermal_profile_params->ec_tp_offset != HP_NO_THERMAL_PROFILE_OFFSET) {
 			if (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE ||
+			    platform_profile_written ||
 			    priv->prev_mode != -1) {
-				hp_wmi_get_fan_count_userdefine_trigger();
-				if (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE)
-					omen_thermal_profile_set(active_thermal_profile_params->performance);
+				platform_profile_victus_s_set_ec(active_platform_profile);
 			}
 			schedule_delayed_work(&priv->keep_alive_dwork,
 					      secs_to_jiffies(KEEP_ALIVE_DELAY_SECS));
@@ -3759,6 +3801,13 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 	{
 		/* 8E0F: Victus by HP Gaming Laptop 15-fa2xxx */
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8E0F") },
+	},
+	{
+		/* 8EDD / 8EEF: OMEN HyperX 16 Gaming Laptop */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8EDD") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8EEF") },
 	},
 	{}
 };

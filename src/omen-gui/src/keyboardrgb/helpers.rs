@@ -39,7 +39,7 @@ pub fn get_zone_for_key(name: &str) -> i32 {
         "W" | "A" | "S" | "D" => 4,
         "Esc" | "F1" | "F2" | "F3" | "F4" | "~" | "1" | "2" | "3" | "4" | 
         "Tab" | "Q" | "E" | "R" | "Caps" | "F" | "Shift" | "Z" | "X" | "C" | "V" | 
-        "Ctrl" | "Win" => 1,
+        "Ctrl" | "Fn" | "Win" => 1,
         "F5" | "F6" | "F7" | "F8" | "5" | "6" | "7" | "8" | "T" | "Y" | "U" | "I" |
         "G" | "H" | "J" | "K" | "B" | "N" | "M" | "," | "Alt" | "Space" => 2,
         _ => 3,

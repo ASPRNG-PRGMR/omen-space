@@ -105,9 +105,11 @@ fn translate_tr(key: &'static str) -> &'static str {
         "max" => "Maksimum",
         "ec" => "EC (Donanım)",
         "custom" => "Özel",
-        "gpu_mode" => "GPU Modu",
-        "hybrid" => "Hibrit (Hybrid)",
-        "discrete" => "Harici (Discrete)",
+        "gpu_mode" => "GPU Modu (Yeniden Başlatma Gerekir)",
+        "hybrid" => "Hibrit (Hybrid — Yeniden Başlatma Gerekir)",
+        "discrete" => "Harici (Discrete — Yeniden Başlatma Gerekir)",
+        "advanced" => "Advanced Optimus (Yeniden Başlatma Gerekir)",
+        "gpu_reboot_notify" => "GPU modunun etkin olması için sistemi yeniden başlatmanız gerekiyor.",
         "exit" => "Çıkış",
         
         // Tooltips
@@ -116,6 +118,7 @@ fn translate_tr(key: &'static str) -> &'static str {
         "tt_gpu" => "GPU",
         "tt_gpu_hybrid" => "Hibrit (Hybrid)",
         "tt_gpu_discrete" => "Harici (dGPU)",
+        "tt_gpu_advanced" => "Advanced Optimus",
         
         _ => translate_en(key),
     }
@@ -134,9 +137,11 @@ fn translate_en(key: &'static str) -> &'static str {
         "max" => "Max",
         "ec" => "EC (Hardware)",
         "custom" => "Custom",
-        "gpu_mode" => "GPU Mode",
-        "hybrid" => "Hybrid",
-        "discrete" => "Discrete (dGPU)",
+        "gpu_mode" => "GPU Mode (Requires Reboot)",
+        "hybrid" => "Hybrid (Requires Reboot)",
+        "discrete" => "Discrete dGPU (Requires Reboot)",
+        "advanced" => "Advanced Optimus (Requires Reboot)",
+        "gpu_reboot_notify" => "Please restart your system for the GPU mode change to take effect.",
         "exit" => "Exit",
         
         // Tooltips
@@ -145,6 +150,7 @@ fn translate_en(key: &'static str) -> &'static str {
         "tt_gpu" => "GPU",
         "tt_gpu_hybrid" => "Hybrid",
         "tt_gpu_discrete" => "Discrete (dGPU)",
+        "tt_gpu_advanced" => "Advanced Optimus",
         
         _ => key,
     }

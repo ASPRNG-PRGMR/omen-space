@@ -76,13 +76,21 @@ impl MuxService {
         Path::new(HP_WMI_GRAPHICS_MODE_PATH).exists()
     }
 
-    /// Detect GPU mode — mirrors Python NativeWmiMuxController.get_mode().
-    ///
-    /// Priority:
-    ///   1. DRM eDP connector connected to NVIDIA (vendor=0x10de)  → discrete
-    ///   2. lspci: NVIDIA without iGPU                             → discrete
-    ///   3. lspci: NVIDIA + iGPU                                   → hybrid
-    async fn detect_mode() -> String {
+    /// Read configured firmware MUX mode from `/sys/devices/platform/hp-wmi/gpu_mux_mode` (#313).
+    /// Driver mapping: 0 = hybrid, 1 = discrete, 2 = advanced (Advanced Optimus), 3 = integrated.
+    async fn read_firmware_mux_mode() -> Option<String> {
+        let raw = tokio::fs::read_to_string(HP_WMI_GRAPHICS_MODE_PATH).await.ok()?;
+        match raw.trim() {
+            "0" | "hybrid" => Some("hybrid".to_string()),
+            "1" | "discrete" => Some("discrete".to_string()),
+            "2" | "advanced" | "optimus" => Some("advanced".to_string()),
+            "3" | "integrated" => Some("integrated".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Infer current display routing from DRM eDP connector and PCI bus topology.
+    async fn detect_routing_mode() -> String {
         // 1. DRM eDP check
         if let Ok(entries) = glob("/sys/class/drm/card[0-9]*") {
             for entry in entries.filter_map(Result::ok) {
@@ -103,39 +111,48 @@ impl MuxService {
         }
 
         // 2. Passive sysfs check (replaces lspci -D to prevent waking dGPU from D3cold)
-    let mut has_nvidia = false;
-    let mut has_igpu = false;
+        let mut has_nvidia = false;
+        let mut has_igpu = false;
 
-    if let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let class = std::fs::read_to_string(path.join("class")).unwrap_or_default();
-            let class = class.trim();
+        if let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let class = std::fs::read_to_string(path.join("class")).unwrap_or_default();
+                let class = class.trim();
 
-            // Check for display controllers: 0x030000 (VGA) or 0x030200 (3D Controller)
-            if class.starts_with("0x03") {
-                let vendor = std::fs::read_to_string(path.join("vendor")).unwrap_or_default();
-                let vendor = vendor.trim().to_lowercase();
+                // Check for display controllers: 0x030000 (VGA) or 0x030200 (3D Controller)
+                if class.starts_with("0x03") {
+                    let vendor = std::fs::read_to_string(path.join("vendor")).unwrap_or_default();
+                    let vendor = vendor.trim().to_lowercase();
 
-                if vendor == "0x10de" {
-                    has_nvidia = true;
-                } else if vendor == "0x1002" || vendor == "0x8086" {
-                    // AMD (0x1002) or Intel (0x8086)
-                    has_igpu = true;
+                    if vendor == "0x10de" {
+                        has_nvidia = true;
+                    } else if vendor == "0x1002" || vendor == "0x8086" {
+                        // AMD (0x1002) or Intel (0x8086)
+                        has_igpu = true;
+                    }
                 }
             }
         }
-    }
 
-    if has_nvidia && has_igpu {
-        return "hybrid".to_string();
-    } else if has_nvidia {
-        return "discrete".to_string();
-    } else if has_igpu {
-        return "integrated".to_string();
-    }
+        if has_nvidia && has_igpu {
+            return "hybrid".to_string();
+        } else if has_nvidia {
+            return "discrete".to_string();
+        } else if has_igpu {
+            return "integrated".to_string();
+        }
 
         "unknown".to_string()
+    }
+
+    /// Detect configured GPU mode (#313): prefers `hp-wmi/gpu_mux_mode` firmware readback so
+    /// Advanced Optimus (`2`) is reported accurately instead of always collapsing to `hybrid`.
+    async fn detect_mode() -> String {
+        if let Some(fw_mode) = Self::read_firmware_mux_mode().await {
+            return fw_mode;
+        }
+        Self::detect_routing_mode().await
     }
 
     /// Enumerate connected displays with GPU vendor — mirrors Python _get_displays().
@@ -204,9 +221,15 @@ impl MuxService {
         let backend = if available { "wmi-native" } else { "none" };
         let available_backends: Vec<&str> = if available { vec!["wmi-native"] } else { vec![] };
         let forced_backend = g.config.mux_backend.clone();
+        let cached = g.cached_mode.clone();
         drop(g);
 
-        let mode = Self::detect_mode().await;
+        let routing_mode = Self::detect_routing_mode().await;
+        let mode = if let Some(c) = cached {
+            c
+        } else {
+            Self::detect_mode().await
+        };
         let displays = Self::get_displays().await;
 
         let json = serde_json::json!({
@@ -215,6 +238,7 @@ impl MuxService {
             "available_backends": available_backends,
             "forced_backend": forced_backend,
             "mode": mode,
+            "routing_mode": routing_mode,
             "displays": displays,
         });
         json.to_string()

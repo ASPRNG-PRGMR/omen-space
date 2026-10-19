@@ -37,7 +37,7 @@ async fn get_conn() -> Result<zbus::Connection, zbus::Error> {
 
 /// Send a desktop notification via org.freedesktop.Notifications.
 /// urgency: 0 = low, 1 = normal, 2 = critical
-async fn notify_dbus_error(context: &str, err: &zbus::Error) {
+async fn notify_dbus_error(context: &str, err: impl std::fmt::Display) {
     let title = "OMEN Space — D-Bus Hatası";
     let body = format!("{}: {}", context, err);
     eprintln!("[omen-gui] {}", body);
@@ -527,11 +527,23 @@ pub fn set_undervolt_sync(core_mv: i32, cache_mv: i32) {
     rt.spawn(async move {
         if let Ok(conn) = get_conn().await {
             if let Ok(proxy) = UndervoltProxy::new(&conn).await {
-                if let Err(e) = proxy.set_offset("core", core_mv).await {
-                    notify_dbus_error("Undervolt (core) uygulanamıyor", &e).await;
+                match proxy.set_offset("core", core_mv).await {
+                    Ok(resp) if resp.starts_with("FAIL") => {
+                        notify_dbus_error("Undervolt (core) uygulanamıyor", &resp).await;
+                    }
+                    Err(e) => {
+                        notify_dbus_error("Undervolt (core) uygulanamıyor", &e).await;
+                    }
+                    _ => {}
                 }
-                if let Err(e) = proxy.set_offset("cache", cache_mv).await {
-                    notify_dbus_error("Undervolt (cache) uygulanamıyor", &e).await;
+                match proxy.set_offset("cache", cache_mv).await {
+                    Ok(resp) if resp.starts_with("FAIL") => {
+                        notify_dbus_error("Undervolt (cache) uygulanamıyor", &resp).await;
+                    }
+                    Err(e) => {
+                        notify_dbus_error("Undervolt (cache) uygulanamıyor", &e).await;
+                    }
+                    _ => {}
                 }
             } else {
                 notify_dbus_error_bg("Daemon bağlantısı kurulamadı (Undervolt)",
@@ -546,8 +558,27 @@ pub fn set_power_limits_sync(pl1: i32, pl2: i32) {
     rt.spawn(async move {
         if let Ok(conn) = get_conn().await {
             if let Ok(proxy) = PowerProxy::new(&conn).await {
-                if let Err(e) = proxy.set_power_limits(true, pl1, pl2).await {
-                    notify_dbus_error("Güç limitleri ayarlanamıyor (RAPL)", &e).await;
+                match proxy.set_power_limits(true, pl1, pl2).await {
+                    Ok(resp) if resp.starts_with("FAIL") => {
+                        notify_dbus_error("Güç limitleri ayarlanamıyor (RAPL)", &resp).await;
+                    }
+                    Err(e) => {
+                        notify_dbus_error("Güç limitleri ayarlanamıyor (RAPL)", &e).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    });
+}
+
+pub fn reset_power_limits_sync(pl1: i32, pl2: i32) {
+    let rt = get_runtime();
+    rt.spawn(async move {
+        if let Ok(conn) = get_conn().await {
+            if let Ok(proxy) = PowerProxy::new(&conn).await {
+                if let Err(e) = proxy.set_power_limits(false, pl1, pl2).await {
+                    notify_dbus_error("Güç limitleri sıfırlanamıyor (RAPL)", &e).await;
                 }
             }
         }
@@ -559,8 +590,14 @@ pub fn set_tcc_offset_sync(val: i32) {
     rt.spawn(async move {
         if let Ok(conn) = get_conn().await {
             if let Ok(proxy) = UndervoltProxy::new(&conn).await {
-                if let Err(e) = proxy.set_tcc_offset(val).await {
-                    notify_dbus_error("TCC offset ayarlanamıyor", &e).await;
+                match proxy.set_tcc_offset(val).await {
+                    Ok(resp) if resp.starts_with("FAIL") => {
+                        notify_dbus_error("TCC offset ayarlanamıyor", &resp).await;
+                    }
+                    Err(e) => {
+                        notify_dbus_error("TCC offset ayarlanamıyor", &e).await;
+                    }
+                    _ => {}
                 }
             }
         }

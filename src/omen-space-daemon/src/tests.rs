@@ -224,6 +224,7 @@ mod tests {
         for id in [
             "8A3D", "8A50", "8BBE", "8BD5", "8C99", "8C9C",
             "8C9A", "8BB2", "8BC8", "8B3B", "8C78", "8786", "8A4C", "8D40",
+            "8EDD", "8EEF",
         ] {
             assert!(get_board(&json, id).is_some(), "Board {} must exist in models", id);
             assert!(is_verified(&json, id), "Board {} must exist in verified_boards", id);

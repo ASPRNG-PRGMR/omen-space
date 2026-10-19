@@ -169,6 +169,63 @@ pub struct UndervoltService {
     config: Arc<Mutex<UndervoltConfig>>,
     available: bool,
     is_amd: bool,
+    voltage_locked: bool,
+}
+
+fn is_cpu_voltage_locked(cpu_spec: &str) -> bool {
+    let cpu_upper = cpu_spec.to_uppercase();
+    if cpu_upper.contains("AMD") {
+        return false;
+    }
+    let is_unlocked_hx = cpu_upper.contains("HX") || cpu_upper.contains("HK") || cpu_upper.contains("-K ");
+    let is_locked_gen = cpu_upper.contains("12TH GEN")
+        || cpu_upper.contains("13TH GEN")
+        || cpu_upper.contains("14TH GEN")
+        || cpu_upper.contains("CORE ULTRA")
+        || cpu_upper.contains("I5-12")
+        || cpu_upper.contains("I7-12")
+        || cpu_upper.contains("I9-12")
+        || cpu_upper.contains("I5-13")
+        || cpu_upper.contains("I7-13")
+        || cpu_upper.contains("I9-13")
+        || cpu_upper.contains("I5-14")
+        || cpu_upper.contains("I7-14")
+        || cpu_upper.contains("I9-14");
+    is_locked_gen && !is_unlocked_hx
+}
+
+const INTEL_TCC_SYSFS_PATH: &str = "/sys/bus/pci/devices/0000:00:04.0/tcc_offset_degree_celsius";
+
+/// Read `(tj_max, hw_tcc_offset, tcc_locked)` from Intel MSR 0x1a2 (`MSR_IA32_TEMPERATURE_TARGET`)
+/// and/or the kernel's `processor_thermal_device_pci` sysfs node.
+/// MSR 0x1a2 layout on modern Intel:
+///   - Bit 31: Locked (1 = locked by BIOS/firmware until reset)
+///   - Bits 29:24: TCC Activation Offset (6-bit unsigned degree offset)
+///   - Bits 23:16: Temperature Target / TjMax (8-bit °C, e.g. 100 or 105)
+fn read_intel_tcc_hw() -> (i32, Option<i32>, bool) {
+    let mut tj_max = 100;
+    let mut hw_offset = None;
+    let mut locked = false;
+
+    if let Some(raw) = read_msr(MSR_TEMPERATURE, 0) {
+        locked = ((raw >> 31) & 1) != 0;
+        let tj = ((raw >> 16) & 0xFF) as i32;
+        if (70..=130).contains(&tj) {
+            tj_max = tj;
+        }
+        let off = ((raw >> 24) & 0x3F) as i32;
+        hw_offset = Some(off);
+    }
+
+    if let Ok(s) = std::fs::read_to_string(INTEL_TCC_SYSFS_PATH) {
+        if let Ok(sysfs_off) = s.trim().parse::<i32>() {
+            if sysfs_off >= 0 {
+                hw_offset = Some(sysfs_off);
+            }
+        }
+    }
+
+    (tj_max, hw_offset, locked)
 }
 
 fn has_ryzenadj() -> bool {
@@ -198,12 +255,13 @@ impl UndervoltService {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let specs = crate::sysmon::get_hardware_specs();
         let is_amd = specs.cpu_spec.to_uppercase().contains("AMD");
+        let voltage_locked = is_cpu_voltage_locked(&specs.cpu_spec);
         ensure_msr_module();
         
         let available = if is_amd {
             has_ryzenadj()
         } else {
-            Path::new("/dev/cpu/0/msr").exists()
+            Path::new("/dev/cpu/0/msr").exists() || Path::new(INTEL_TCC_SYSFS_PATH).exists()
         };
         
         let config = UndervoltConfig::load();
@@ -212,6 +270,7 @@ impl UndervoltService {
             config: Arc::new(Mutex::new(config)),
             available,
             is_amd,
+            voltage_locked,
         };
 
         if available {
@@ -229,6 +288,10 @@ impl UndervoltService {
     }
 
     async fn apply_all_offsets(&self) {
+        if self.voltage_locked {
+            info!("Undervolt: CPU voltage control is hardware-locked on this SKU; skipping MSR 0x150 startup restore (#313).");
+            return;
+        }
         let cfg = self.config.lock().await.clone();
         for (plane, &mv) in &cfg.offsets {
             if mv == 0 { continue; }
@@ -296,6 +359,29 @@ impl UndervoltService {
             return "FAIL".to_string();
         }
 
+        if self.voltage_locked {
+            if mv == 0 {
+                return "OK".to_string();
+            }
+            warn!("SetOffset: rejected plane='{}' val={}mV — CPU voltage offsets are hardware-locked on this processor (#313)", plane, mv);
+            return "FAIL: CPU voltage offset is locked by hardware on this processor".to_string();
+        }
+
+        // Avoid touching MSR 0x150 when asked to set 0 mV and the saved offset for this plane is already 0 (#313).
+        if mv == 0 {
+            let prev = self
+                .config
+                .lock()
+                .await
+                .offsets
+                .get(&plane.to_lowercase())
+                .copied()
+                .unwrap_or(0);
+            if prev == 0 {
+                return "OK".to_string();
+            }
+        }
+
         if self.is_amd {
             if plane == "core" {
                 let _ = std::process::Command::new("ryzenadj").arg(format!("--set-coall={}", mv)).output();
@@ -317,6 +403,7 @@ impl UndervoltService {
                     let want_mv = unconvert_offset(bits);
                     if (read_mv - want_mv).abs() > 2.0 {
                         warn!("SetOffset: verify failed: wrote {}mV, read {}mV", want_mv, read_mv);
+                        return "FAIL: MSR voltage offset readback verification failed".to_string();
                     }
                 }
             }
@@ -334,20 +421,54 @@ impl UndervoltService {
         "OK".to_string()
     }
 
-    /// SetTccOffset(val) — write Intel TCC (thermal throttle) offset to MSR 0x1a2.
+    /// SetTccOffset(val) — write Intel TCC (thermal throttle) offset to native sysfs or MSR 0x1a2.
     /// Mirrors Python SetTccOffset(). Range 0–15.
     async fn set_tcc_offset(&self, val: i32) -> String {
         let val = val.clamp(0, 15);
 
-        if self.available {
-            if self.is_amd {
-                let max_temp = 100 - val;
-                let _ = std::process::Command::new("ryzenadj").arg(format!("--tctl-temp={}", max_temp)).output();
-            } else {
-                // FIX #7: Proper read-modify-write for MSR 0x1a2 (Temperature Target).
-                // We must preserve Tj_max (bits 15:8) and reserved bits. A blind write
-                // sets Tj_max to 0, which the CPU silicon rejects with a #GP fault.
-                // On Comet Lake (and most modern Intel), TCC Activation Offset is bits 27:24.
+        if !self.available {
+            return "FAIL: TCC offset interface unavailable".to_string();
+        }
+
+        if self.is_amd {
+            let max_temp = 100 - val;
+            let ok = std::process::Command::new("ryzenadj")
+                .arg(format!("--tctl-temp={}", max_temp))
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !ok {
+                return "FAIL: ryzenadj failed to set tctl-temp".to_string();
+            }
+        } else {
+            let (_tj_max, hw_off, locked) = read_intel_tcc_hw();
+            if locked {
+                if hw_off == Some(val) {
+                    return "OK".to_string();
+                }
+                warn!(
+                    "SetTccOffset({}): MSR 0x1a2 bit 31 is locked by firmware (current hardware offset: {:?}°C)",
+                    val, hw_off
+                );
+                return format!(
+                    "FAIL: TCC offset is locked by firmware at {}°C",
+                    hw_off.unwrap_or(0)
+                );
+            }
+
+            // 1. Prefer the kernel's native processor_thermal_device_pci sysfs attribute when available (#313)
+            let mut applied = false;
+            if Path::new(INTEL_TCC_SYSFS_PATH).exists() {
+                if std::fs::write(INTEL_TCC_SYSFS_PATH, format!("{}\n", val)).is_ok() {
+                    let (_, new_hw, _) = read_intel_tcc_hw();
+                    if new_hw == Some(val) {
+                        applied = true;
+                    }
+                }
+            }
+
+            // 2. Fallback to MSR 0x1a2 read-modify-write (bits 29:24, preserving TjMax in bits 23:16) with readback verification
+            if !applied {
                 let mut write_ok = true;
                 let cpu_count = count_cpus();
                 for cpu in 0..cpu_count {
@@ -358,8 +479,8 @@ impl UndervoltService {
                             let mut bytes = [0u8; 8];
                             if f.read_exact(&mut bytes).is_ok() {
                                 let cur_val = u64::from_le_bytes(bytes);
-                                // Clear bits 27:24 (mask 0x0F000000), then set them to the new offset
-                                let new_val = (cur_val & !0x0F000000u64) | ((val as u64 & 0x0F) << 24);
+                                // Clear bits 29:24 (mask 0x3F000000), then set them to the new offset
+                                let new_val = (cur_val & !0x3F000000u64) | ((val as u64 & 0x3F) << 24);
                                 if f.seek(SeekFrom::Start(MSR_TEMPERATURE)).is_ok() {
                                     if f.write_all(&new_val.to_le_bytes()).is_err() {
                                         warn!("SetTccOffset: MSR 0x1a2 write failed on CPU {}", cpu);
@@ -378,8 +499,13 @@ impl UndervoltService {
                         write_ok = false;
                     }
                 }
-                if !write_ok {
-                    warn!("SetTccOffset: MSR 0x1a2 write failed");
+                let (_, verify_off, _) = read_intel_tcc_hw();
+                if !write_ok || verify_off != Some(val) {
+                    warn!(
+                        "SetTccOffset({}): write or readback verification failed (readback={:?})",
+                        val, verify_off
+                    );
+                    return "FAIL: Failed to apply or verify TCC offset in hardware".to_string();
                 }
             }
         }
@@ -405,11 +531,23 @@ impl UndervoltService {
             warning = Some("RyzenAdj is not installed. Please install ryzenadj to use AMD Undervolting & Power Limits.".to_string());
         }
 
+        let (tj_max, hw_tcc_offset, tcc_locked) = if self.is_amd {
+            (100, None, false)
+        } else {
+            read_intel_tcc_hw()
+        };
+        let effective_tcc = hw_tcc_offset.unwrap_or(cfg.tcc_offset);
+
         let json = serde_json::json!({
             "available": self.available,
             "is_amd": self.is_amd,
+            "voltage_locked": self.voltage_locked,
             "offsets": cfg.offsets,
-            "tcc_offset": cfg.tcc_offset,
+            "tcc_offset": effective_tcc,
+            "saved_tcc_offset": cfg.tcc_offset,
+            "hw_tcc_offset": hw_tcc_offset,
+            "tcc_locked": tcc_locked,
+            "tj_max": tj_max,
             "external_controller": external,
             "warning": warning,
         });
@@ -429,21 +567,24 @@ impl UndervoltService {
             }
             result.insert("tcc_target_c".into(), (100u64 - cfg.tcc_offset as u64).into());
         } else {
-            for (plane, idx) in &[("core", PLANE_CORE), ("gpu", PLANE_GPU),
-                                    ("cache", PLANE_CACHE), ("uncore", PLANE_UNCORE)] {
-                let read_req = pack_offset_read(*idx);
-                if write_msr(read_req, MSR_VOLTAGE_OFFSETS) {
-                    if let Some(resp) = read_msr(MSR_VOLTAGE_OFFSETS, 0) {
-                        let mv = unpack_offset(resp);
-                        result.insert(plane.to_string(), mv.into());
+            if !self.voltage_locked {
+                for (plane, idx) in &[("core", PLANE_CORE), ("gpu", PLANE_GPU),
+                                        ("cache", PLANE_CACHE), ("uncore", PLANE_UNCORE)] {
+                    let read_req = pack_offset_read(*idx);
+                    if write_msr(read_req, MSR_VOLTAGE_OFFSETS) {
+                        if let Some(resp) = read_msr(MSR_VOLTAGE_OFFSETS, 0) {
+                            let mv = unpack_offset(resp);
+                            result.insert(plane.to_string(), mv.into());
+                        }
                     }
                 }
             }
-            // TCC temperature
-            if let Some(tcc_raw) = read_msr(MSR_TEMPERATURE, 0) {
-                let tcc_offset = (tcc_raw >> 24) & 0x7F;
-                result.insert("tcc_target_c".into(), (100u64 - tcc_offset).into());
-            }
+            let (tj_max, hw_off, locked) = read_intel_tcc_hw();
+            let off = hw_off.unwrap_or(0);
+            result.insert("tj_max_c".into(), (tj_max as i64).into());
+            result.insert("tcc_offset_c".into(), (off as i64).into());
+            result.insert("tcc_locked".into(), locked.into());
+            result.insert("tcc_target_c".into(), ((tj_max - off).max(0) as u64).into());
         }
         serde_json::Value::Object(result).to_string()
     }

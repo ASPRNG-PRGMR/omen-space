@@ -455,6 +455,20 @@ do_update() {
     echo "====================================="
     echo " Updating OMENSpace..."
     echo "====================================="
+    if [ ! -f "Cargo.toml" ]; then
+        CACHE_REPO="/var/cache/omen-space/repo"
+        echo "Source tree not found in $(pwd); fetching latest repository into $CACHE_REPO..."
+        mkdir -p "/var/cache/omen-space"
+        if [ -d "$CACHE_REPO/.git" ]; then
+            git -C "$CACHE_REPO" fetch --all --prune && git -C "$CACHE_REPO" reset --hard origin/main
+        else
+            rm -rf "$CACHE_REPO"
+            git clone --depth 1 https://github.com/yunusemreyl/omen-space.git "$CACHE_REPO"
+        fi
+        mkdir -p /etc/omen-space
+        echo "$CACHE_REPO" > /etc/omen-space/repo_path
+        exec bash "$CACHE_REPO/setup.sh" update
+    fi
     if [ -d ".git" ]; then
         git pull || echo "Warning: Failed to pull latest changes. Building current version..."
     else

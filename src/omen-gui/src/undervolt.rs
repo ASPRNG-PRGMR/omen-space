@@ -172,7 +172,7 @@ pub fn build_page() -> gtk::Box {
         .title(i18n::t("pl1_label"))
         .subtitle(i18n::t("pl1_sub"))
         .build();
-    let pl1_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 25.0, 150.0, 1.0);
+    let pl1_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 25.0, 160.0, 1.0);
     pl1_scale.set_value(45.0);
     pl1_scale.set_hexpand(true);
     pl1_scale.set_size_request(200, -1);
@@ -218,26 +218,39 @@ pub fn build_page() -> gtk::Box {
     pwr_group.add(&pl2_row);
 
     // TCC Offset (Termal Tetikleme Sıcaklığı)
+    let tj_max_state = Rc::new(RefCell::new(100i32));
+    let is_voltage_locked = Rc::new(RefCell::new(false));
+    let is_tcc_locked = Rc::new(RefCell::new(false));
+    let loaded_core_mv = Rc::new(RefCell::new(0i32));
+    let loaded_cache_mv = Rc::new(RefCell::new(0i32));
+    let loaded_tcc = Rc::new(RefCell::new(0i32));
+
     let tcc_row = adw::ActionRow::builder()
         .title(i18n::t("tcc_label"))
         .subtitle(i18n::t("tcc_sub"))
         .build();
     let tcc_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 15.0, 1.0);
-    tcc_scale.set_value(3.0);
+    tcc_scale.set_value(0.0);
     tcc_scale.set_hexpand(true);
     tcc_scale.set_size_request(200, -1);
     tcc_scale.set_valign(gtk::Align::Center);
     let tcc_lbl = gtk::Label::builder()
-        .label(format!("97°C ({}: 3°C)", i18n::t("tcc_offset_str")))
+        .label(format!("100°C ({}: 0°C)", i18n::t("tcc_offset_str")))
         .css_classes(["os-monitor-val-sm"])
         .valign(gtk::Align::Center)
         .margin_start(8)
         .build();
     let tcc_lbl_clone = tcc_lbl.clone();
+    let tj_max_for_scale = tj_max_state.clone();
+    let tcc_locked_for_scale = is_tcc_locked.clone();
     tcc_scale.connect_value_changed(move |s| {
         let val = s.value() as i32;
-        let max_temp = 100 - val;
-        tcc_lbl_clone.set_label(&format!("{}°C ({}: {}°C)", max_temp, i18n::t("tcc_offset_str"), val));
+        let max_temp = *tj_max_for_scale.borrow() - val;
+        if *tcc_locked_for_scale.borrow() {
+            tcc_lbl_clone.set_label(&format!("{}°C ({}: {}°C · Locked)", max_temp, i18n::t("tcc_offset_str"), val));
+        } else {
+            tcc_lbl_clone.set_label(&format!("{}°C ({}: {}°C)", max_temp, i18n::t("tcc_offset_str"), val));
+        }
     });
     tcc_row.add_suffix(&tcc_scale);
     tcc_row.add_suffix(&tcc_lbl);
@@ -268,12 +281,34 @@ pub fn build_page() -> gtk::Box {
     let tcc_s_c = tcc_scale.clone();
     let def_pl1_reset = default_pl1.clone();
     let def_pl2_reset = default_pl2.clone();
+    let v_locked_reset = is_voltage_locked.clone();
+    let tcc_locked_reset = is_tcc_locked.clone();
+    let loaded_core_reset = loaded_core_mv.clone();
+    let loaded_cache_reset = loaded_cache_mv.clone();
+    let loaded_tcc_reset = loaded_tcc.clone();
     reset_btn.connect_clicked(move |_| {
-        core_s_c.set_value(0.0);
-        cache_s_c.set_value(0.0);
-        pl1_s_c.set_value(*def_pl1_reset.borrow());
-        pl2_s_c.set_value(*def_pl2_reset.borrow());
-        tcc_s_c.set_value(0.0);
+        let def1 = *def_pl1_reset.borrow();
+        let def2 = *def_pl2_reset.borrow();
+        pl1_s_c.set_value(def1);
+        pl2_s_c.set_value(def2);
+        crate::daemon_client::reset_power_limits_sync(def1 as i32, def2 as i32);
+
+        if !*v_locked_reset.borrow() {
+            core_s_c.set_value(0.0);
+            cache_s_c.set_value(0.0);
+            if *loaded_core_reset.borrow() != 0 || *loaded_cache_reset.borrow() != 0 {
+                crate::daemon_client::set_undervolt_sync(0, 0);
+                *loaded_core_reset.borrow_mut() = 0;
+                *loaded_cache_reset.borrow_mut() = 0;
+            }
+        }
+        if !*tcc_locked_reset.borrow() {
+            tcc_s_c.set_value(0.0);
+            if *loaded_tcc_reset.borrow() != 0 {
+                crate::daemon_client::set_tcc_offset_sync(0);
+                *loaded_tcc_reset.borrow_mut() = 0;
+            }
+        }
     });
 
     let apply_btn = gtk::Button::builder()
@@ -286,15 +321,34 @@ pub fn build_page() -> gtk::Box {
     let pl2_s_apply = pl2_scale.clone();
     let cache_s_apply = cache_scale.clone();
     let tcc_s_apply = tcc_scale.clone();
+    let v_locked_apply = is_voltage_locked.clone();
+    let tcc_locked_apply = is_tcc_locked.clone();
+    let loaded_core_apply = loaded_core_mv.clone();
+    let loaded_cache_apply = loaded_cache_mv.clone();
+    let loaded_tcc_apply = loaded_tcc.clone();
     apply_btn.connect_clicked(move |_| {
         let core_mv = *core_val_c.borrow();
         let cache_mv = cache_s_apply.value() as i32;
         let pl1 = pl1_s_apply.value() as i32;
         let pl2 = pl2_s_apply.value() as i32;
         let tcc = tcc_s_apply.value() as i32;
-        crate::daemon_client::set_undervolt_sync(core_mv, cache_mv);
+
+        // Only call SetOffset when voltage controls are supported and changed (#313)
+        if !*v_locked_apply.borrow()
+            && (core_mv != *loaded_core_apply.borrow() || cache_mv != *loaded_cache_apply.borrow())
+        {
+            crate::daemon_client::set_undervolt_sync(core_mv, cache_mv);
+            *loaded_core_apply.borrow_mut() = core_mv;
+            *loaded_cache_apply.borrow_mut() = cache_mv;
+        }
+
         crate::daemon_client::set_power_limits_sync(pl1, pl2);
-        crate::daemon_client::set_tcc_offset_sync(tcc);
+
+        // Only call SetTccOffset when TCC is unlocked and changed (#313)
+        if !*tcc_locked_apply.borrow() && tcc != *loaded_tcc_apply.borrow() {
+            crate::daemon_client::set_tcc_offset_sync(tcc);
+            *loaded_tcc_apply.borrow_mut() = tcc;
+        }
     });
 
     actions_box.append(&reset_btn);
@@ -308,6 +362,10 @@ pub fn build_page() -> gtk::Box {
     let pl1_s_load = pl1_scale.clone();
     let pl2_s_load = pl2_scale.clone();
     let tcc_s_load = tcc_scale.clone();
+    let tcc_lbl_load = tcc_lbl.clone();
+    let tcc_row_load = tcc_row.clone();
+    let pl1_row_load = pl1_row.clone();
+    let pl2_row_load = pl2_row.clone();
     let badge_load = status_badge.clone();
     let def_pl1_load = default_pl1.clone();
     let def_pl2_load = default_pl2.clone();
@@ -320,12 +378,21 @@ pub fn build_page() -> gtk::Box {
     let warn_desc_clone = warn_desc.clone();
     let volt_group_clone = volt_group.clone();
 
+    let tj_max_load = tj_max_state.clone();
+    let v_locked_load = is_voltage_locked.clone();
+    let tcc_locked_load = is_tcc_locked.clone();
+    let loaded_core_load = loaded_core_mv.clone();
+    let loaded_cache_load = loaded_cache_mv.clone();
+    let loaded_tcc_load = loaded_tcc.clone();
+
     glib::spawn_future_local(async move {
         // First check CPU lock
         let mut locked = false;
         let mut is_amd = false;
+        let mut cpu_spec_str = String::new();
         if let Ok(hw_json) = crate::daemon_client::get_hardware_specs_async().await {
             if let Ok(hw) = serde_json::from_str::<crate::daemon_client::HardwareSpecs>(&hw_json) {
+                cpu_spec_str = hw.cpu_spec.clone();
                 let cpu_upper = hw.cpu_spec.to_uppercase();
                 is_amd = cpu_upper.contains("AMD");
                 // High-TDP HX / i9 / Core Ultra 7/9 / Ryzen 9 CPUs default to higher PL1/PL2 (#302)
@@ -337,25 +404,27 @@ pub fn build_page() -> gtk::Box {
                 }
                 if is_cpu_locked(&hw.cpu_spec) {
                     locked = true;
-                    warn_title_clone.set_label(i18n::t("uv_unsupported_title"));
-                    warn_desc_clone.set_label(&i18n::t("uv_unsupported_desc").replace("{}", &hw.cpu_spec));
-                    badge_load.set_label("Locked");
-                    badge_load.set_css_classes(&["badge-err"]);
-                    
-                    volt_group_clone.set_sensitive(false);
-                    // allow power limits and TCC offset for locked CPUs
                 }
             }
         }
 
         if let Ok(json) = crate::daemon_client::get_undervolt_state_async().await {
             if let Ok(state) = serde_json::from_str::<serde_json::Value>(&json) {
-                // Determine if daemon thinks it's AMD (fallback)
                 if let Some(amd_flag) = state.get("is_amd").and_then(|v| v.as_bool()) {
                     is_amd = amd_flag;
                 }
+                if let Some(v_locked) = state.get("voltage_locked").and_then(|v| v.as_bool()) {
+                    locked = locked || v_locked;
+                }
+                *v_locked_load.borrow_mut() = locked;
 
-                if is_amd {
+                if locked && !is_amd {
+                    warn_title_clone.set_label(i18n::t("uv_unsupported_title"));
+                    warn_desc_clone.set_label(&i18n::t("uv_unsupported_desc").replace("{}", &cpu_spec_str));
+                    badge_load.set_label("Locked");
+                    badge_load.set_css_classes(&["badge-err"]);
+                    volt_group_clone.set_sensitive(false);
+                } else if is_amd {
                     warn_title_clone.set_label("AMD Curve Optimizer & PBO");
                     if let Some(w) = state.get("warning").and_then(|v| v.as_str()) {
                         warn_desc_clone.set_label(w);
@@ -370,28 +439,84 @@ pub fn build_page() -> gtk::Box {
                     cache_row_clone.set_visible(false);
                     core_row_clone.set_title("Curve Optimizer (All Core)");
                     core_row_clone.set_subtitle("Negative values = Undervolt. Range: -30 to +30.");
-                } else if !locked {
+                } else {
                     badge_load.set_label("MSR OK");
                     badge_load.set_css_classes(&["badge-ok"]);
                 }
 
-                if let Some(core) = state.get("offsets").and_then(|v| v.get("core")).and_then(|v| v.as_f64()) {
-                    core_s_load.set_value(core);
+                if let Some(tj) = state.get("tj_max").and_then(|v| v.as_i64()) {
+                    *tj_max_load.borrow_mut() = tj as i32;
                 }
-                // Also parse old state format just in case
-                if let Some(core) = state.get("core").and_then(|v| v.as_f64()) {
+                let tcc_locked = state.get("tcc_locked").and_then(|v| v.as_bool()).unwrap_or(false);
+                *tcc_locked_load.borrow_mut() = tcc_locked;
+
+                if let Some(core) = state.get("offsets").and_then(|v| v.get("core")).and_then(|v| v.as_f64())
+                    .or_else(|| state.get("core").and_then(|v| v.as_f64()))
+                {
                     core_s_load.set_value(core);
+                    *loaded_core_load.borrow_mut() = core as i32;
                 }
                 
-                if let Some(cache) = state.get("offsets").and_then(|v| v.get("cache")).and_then(|v| v.as_f64()) {
+                if let Some(cache) = state.get("offsets").and_then(|v| v.get("cache")).and_then(|v| v.as_f64())
+                    .or_else(|| state.get("cache").and_then(|v| v.as_f64()))
+                {
                     cache_s_load.set_value(cache);
-                }
-                if let Some(cache) = state.get("cache").and_then(|v| v.as_f64()) {
-                    cache_s_load.set_value(cache);
+                    *loaded_cache_load.borrow_mut() = cache as i32;
                 }
 
-                if let Some(tcc) = state.get("tcc_offset").and_then(|v| v.as_f64()) {
-                    tcc_s_load.set_value(tcc);
+                let effective_tcc = state
+                    .get("hw_tcc_offset")
+                    .and_then(|v| v.as_f64())
+                    .or_else(|| state.get("tcc_offset").and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0);
+                let saved_tcc = state.get("saved_tcc_offset").and_then(|v| v.as_i64());
+
+                tcc_s_load.set_value(effective_tcc);
+                *loaded_tcc_load.borrow_mut() = effective_tcc as i32;
+
+                let tj = *tj_max_load.borrow();
+                let target_temp = tj - (effective_tcc as i32);
+                if tcc_locked {
+                    tcc_s_load.set_sensitive(false);
+                    tcc_lbl_load.set_label(&format!(
+                        "{}°C ({}: {}°C · Locked)",
+                        target_temp,
+                        i18n::t("tcc_offset_str"),
+                        effective_tcc as i32
+                    ));
+                    let lock_note = if let Some(saved) = saved_tcc {
+                        if saved != effective_tcc as i64 {
+                            format!(
+                                "TjMax: {}°C · Hardware TCC offset is locked at {}°C by firmware (effective target: {}°C; saved config: {}°C).",
+                                tj, effective_tcc as i32, target_temp, saved
+                            )
+                        } else {
+                            format!(
+                                "TjMax: {}°C · Hardware TCC offset is locked at {}°C by firmware (effective target: {}°C).",
+                                tj, effective_tcc as i32, target_temp
+                            )
+                        }
+                    } else {
+                        format!(
+                            "TjMax: {}°C · Hardware TCC offset is locked at {}°C by firmware (effective target: {}°C).",
+                            tj, effective_tcc as i32, target_temp
+                        )
+                    };
+                    tcc_row_load.set_subtitle(&lock_note);
+                } else {
+                    tcc_lbl_load.set_label(&format!(
+                        "{}°C ({}: {}°C)",
+                        target_temp,
+                        i18n::t("tcc_offset_str"),
+                        effective_tcc as i32
+                    ));
+                    if tj != 100 {
+                        tcc_row_load.set_subtitle(&format!(
+                            "{} (TjMax: {}°C)",
+                            i18n::t("tcc_sub"),
+                            tj
+                        ));
+                    }
                 }
             }
         }
@@ -399,6 +524,14 @@ pub fn build_page() -> gtk::Box {
         // Load Power Limits separately
         if let Ok(json) = crate::daemon_client::get_power_profile_raw_async().await {
             if let Ok(state) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Some(boot_pl1) = state.get("boot_pl1_w").and_then(|v| v.as_f64()) {
+                    *def_pl1_load.borrow_mut() = boot_pl1;
+                    pl1_row_load.set_subtitle(&format!("{} (Boot default: {:.0} W)", i18n::t("pl1_sub"), boot_pl1));
+                }
+                if let Some(boot_pl2) = state.get("boot_pl2_w").and_then(|v| v.as_f64()) {
+                    *def_pl2_load.borrow_mut() = boot_pl2;
+                    pl2_row_load.set_subtitle(&format!("{} (Boot default: {:.0} W)", i18n::t("pl2_sub"), boot_pl2));
+                }
                 if let Some(pl1) = state.get("pl1_w").and_then(|v| v.as_f64()) {
                     pl1_s_load.set_value(pl1);
                 }

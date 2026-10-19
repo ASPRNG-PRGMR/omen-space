@@ -389,6 +389,8 @@ fn start_update_process(vbox: gtk::Box, dialog: gtk::Window) {
     let pbar_clone = progress.clone();
     let buf_clone = log_buffer.clone();
     let d_c = dialog.clone();
+    let term_toggle_c = term_toggle.clone();
+    let scroll_c = scroll.clone();
     
     glib::spawn_future_local(async move {
         // Pulse timer
@@ -398,34 +400,53 @@ fn start_update_process(vbox: gtk::Box, dialog: gtk::Window) {
             glib::ControlFlow::Continue
         });
 
-        let repo_setup = std::fs::read_to_string("/etc/omen-space/repo_path")
-            .ok()
-            .map(|p| format!("{}/setup.sh", p.trim()))
-            .filter(|p| std::path::Path::new(p).exists());
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let mut candidate_dirs: Vec<String> = Vec::new();
+        if let Ok(p) = std::fs::read_to_string("/etc/omen-space/repo_path") {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                candidate_dirs.push(trimmed.to_string());
+            }
+        }
+        candidate_dirs.extend([
+            "/var/cache/omen-space/repo".to_string(),
+            "/opt/omen-space".to_string(),
+            format!("{}/omen-space", home_dir),
+            format!("{}/Downloads/omen-space", home_dir),
+            format!("{}/Projects/omen-space", home_dir),
+            format!("{}/Projeler/omen-space", home_dir),
+        ]);
 
-        let setup_path = if let Some(path) = repo_setup {
-            path
+        let valid_repo_setup = candidate_dirs
+            .into_iter()
+            .find(|dir| {
+                std::path::Path::new(&format!("{}/setup.sh", dir)).exists()
+                    && std::path::Path::new(&format!("{}/Cargo.toml", dir)).exists()
+            })
+            .map(|dir| format!("{}/setup.sh", dir));
+
+        let mut cmd_builder = tokio::process::Command::new("pkexec");
+        if let Some(setup_path) = valid_repo_setup {
+            cmd_builder.arg("bash").arg(setup_path).arg("update");
         } else if std::path::Path::new("/usr/share/omen-space/setup.sh").exists() {
-            "/usr/share/omen-space/setup.sh".to_string()
-        } else if std::path::Path::new("/opt/omen-space/setup.sh").exists() {
-            "/opt/omen-space/setup.sh".to_string()
+            cmd_builder.arg("bash").arg("/usr/share/omen-space/setup.sh").arg("update");
         } else {
-            let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            let candidates = [
-                format!("{}/omen-space/setup.sh", home_dir),
-                format!("{}/Downloads/omen-space/setup.sh", home_dir),
-                format!("{}/Projects/omen-space/setup.sh", home_dir),
-            ];
-            candidates
-                .into_iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .unwrap_or_else(|| format!("{}/omen-space/setup.sh", home_dir))
-        };
-        
-        let mut cmd = match tokio::process::Command::new("pkexec")
-            .arg("bash")
-            .arg(setup_path)
-            .arg("update")
+            let bootstrap_script = concat!(
+                "set -e; ",
+                "CACHE_REPO=/var/cache/omen-space/repo; ",
+                "mkdir -p /var/cache/omen-space /etc/omen-space; ",
+                "if [ -d \"$CACHE_REPO/.git\" ]; then ",
+                "  git -C \"$CACHE_REPO\" fetch --all --prune && git -C \"$CACHE_REPO\" reset --hard origin/main; ",
+                "else ",
+                "  rm -rf \"$CACHE_REPO\" && git clone --depth 1 https://github.com/yunusemreyl/omen-space.git \"$CACHE_REPO\"; ",
+                "fi; ",
+                "echo \"$CACHE_REPO\" > /etc/omen-space/repo_path; ",
+                "exec bash \"$CACHE_REPO/setup.sh\" update"
+            );
+            cmd_builder.arg("bash").arg("-c").arg(bootstrap_script);
+        }
+
+        let mut cmd = match cmd_builder
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn() {
@@ -451,7 +472,7 @@ fn start_update_process(vbox: gtk::Box, dialog: gtk::Window) {
             }
         });
 
-        let tx2 = tx.clone();
+        let tx2 = tx;
         crate::daemon_client::get_runtime().spawn(async move {
             let mut stderr_reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = stderr_reader.next_line().await {
@@ -468,11 +489,18 @@ fn start_update_process(vbox: gtk::Box, dialog: gtk::Window) {
             }
         });
 
-        let _status = cmd.wait().await;
+        let status = cmd.wait().await;
+        let ok = status.map(|s| s.success()).unwrap_or(false);
         pulse_source.remove();
 
         pbar_clone.set_fraction(1.0);
-        title_lbl.set_label(i18n::t("update_completed"));
+        if ok {
+            title_lbl.set_label(i18n::t("update_completed"));
+        } else {
+            title_lbl.set_label("Update Failed — check terminal output below");
+            term_toggle_c.set_active(true);
+            scroll_c.set_visible(true);
+        }
         
         let close_btn = gtk::Button::builder().label(i18n::t("close")).margin_top(12).build();
         close_btn.connect_clicked(move |_| d_c.close());

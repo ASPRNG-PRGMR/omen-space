@@ -310,6 +310,31 @@ pub fn resolve_physical_disk(sys_root: &Path, mount: &MountEntry) -> Option<Stri
     physical_disk_of(sys_root, &name, 0)
 }
 
+/// Block device size in bytes from sysfs (`class/block/<dev>/size` or `block/<disk>/<part>/size`).
+/// Used as a fallback when a partition is present in `mountinfo` but `statvfs` returns `None`
+/// (e.g. FUSE/`ntfs-3g` mounts without `allow_other` where root gets `EACCES`, or mounts outside
+/// the service sandbox).
+fn block_size_bytes(sys_root: &Path, mount: &MountEntry) -> Option<u64> {
+    let name = block_name_from_source(sys_root, &mount.source)
+        .filter(|n| sys_root.join("class/block").join(n).exists() || sys_root.join("block").join(n).exists())
+        .or_else(|| block_name_from_devnum(sys_root, &mount.dev))?;
+    let size_path = if sys_root.join("class/block").join(&name).join("size").exists() {
+        sys_root.join("class/block").join(&name).join("size")
+    } else if sys_root.join("block").join(&name).join("size").exists() {
+        sys_root.join("block").join(&name).join("size")
+    } else {
+        fs::read_dir(sys_root.join("block"))
+            .ok()?
+            .flatten()
+            .find_map(|e| {
+                let p = e.path().join(&name).join("size");
+                p.exists().then_some(p)
+            })?
+    };
+    let sectors: u64 = read_trimmed(&size_path)?.parse().ok()?;
+    (sectors > 0).then(|| sectors.saturating_mul(SECTOR_BYTES))
+}
+
 // ── Usage ────────────────────────────────────────────────────────────────────
 
 /// Used/total bytes of one filesystem, computed the way `df` does (used = blocks - free blocks).
@@ -372,6 +397,8 @@ pub fn drive_usage(
         if let Some(fs) = group.iter().find_map(|m| statvfs(&m.mountpoint)) {
             slot.used_bytes = slot.used_bytes.saturating_add(fs.used);
             slot.total_bytes = slot.total_bytes.saturating_add(fs.total);
+        } else if let Some(part_bytes) = block_size_bytes(sys_root, group[0]) {
+            slot.total_bytes = slot.total_bytes.saturating_add(part_bytes);
         }
     }
     usage
@@ -415,7 +442,9 @@ pub fn current_drives() -> Vec<DriveInfo> {
 
 /// Live per-drive usage for `drives` (one entry each, same order).
 pub fn current_usage(drives: &[DriveInfo]) -> Vec<DriveUsage> {
-    let text = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    let text = fs::read_to_string("/proc/1/mountinfo")
+        .or_else(|_| fs::read_to_string("/proc/self/mountinfo"))
+        .unwrap_or_default();
     drive_usage(drives, &parse_mountinfo(&text), Path::new("/sys"), &statvfs_bytes)
 }
 
@@ -425,7 +454,7 @@ pub fn refresh_specs(specs: &mut HardwareSpecs) {
     specs.ssd_spec = legacy_ssd_spec(&specs.drives);
 }
 
-fn statvfs_bytes(mountpoint: &str) -> Option<FsUsage> {
+fn statvfs_one(mountpoint: &str) -> Option<FsUsage> {
     let path = std::ffi::CString::new(mountpoint).ok()?;
     // SAFETY: `path` is a valid NUL-terminated string and `stat` is a zeroed plain-old-data
     // struct that statvfs(3) fills in; neither outlives this call.
@@ -440,6 +469,15 @@ fn statvfs_bytes(mountpoint: &str) -> Option<FsUsage> {
     }
     let free = (stat.f_bfree as u64).saturating_mul(frsize);
     Some(FsUsage { used: total.saturating_sub(free), total })
+}
+
+fn statvfs_bytes(mountpoint: &str) -> Option<FsUsage> {
+    let host_path = if mountpoint == "/" {
+        "/proc/1/root".to_string()
+    } else {
+        format!("/proc/1/root{}", mountpoint)
+    };
+    statvfs_one(&host_path).or_else(|| statvfs_one(mountpoint))
 }
 
 #[cfg(test)]

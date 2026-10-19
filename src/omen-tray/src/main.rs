@@ -206,6 +206,7 @@ impl ksni::Tray for Tray {
         };
         let g_label = match self.gpu_mode.as_str() {
             "discrete" => t("tt_gpu_discrete"),
+            "advanced" => t("tt_gpu_advanced"),
             _ => t("tt_gpu_hybrid"),
         };
         ksni::ToolTip {
@@ -360,6 +361,18 @@ impl ksni::Tray for Tray {
                         ..Default::default()
                     }
                     .into(),
+                    CheckmarkItem {
+                        label: t("advanced").into(),
+                        checked: cur_gpu == "advanced",
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.gpu_mode = "advanced".into();
+                            spawn_task(async {
+                                set_gpu_mode("advanced").await;
+                            });
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
                 ],
                 ..Default::default()
             }
@@ -466,7 +479,7 @@ async fn set_gpu_mode(mode: &str) {
                     if resp.contains("REBOOT") {
                         if let Ok(mut child) = Command::new("notify-send")
                             .arg("OMEN Space")
-                            .arg("GPU modunun etkin olması için sistemi yeniden başlatmanız gerekiyor.")
+                            .arg(t("gpu_reboot_notify"))
                             .arg("-i")
                             .arg("dialog-warning")
                             .spawn() {

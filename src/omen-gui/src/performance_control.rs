@@ -165,6 +165,9 @@ pub fn build_page() -> gtk::Box {
     let (auto_btn, auto_wrap)     = build_fan_chip_card(&crate::asset_resolver::get_asset_path("balanced.svg"),    i18n::t("fan_auto"),   i18n::t("fan_auto_sub"));
     let (max_btn, max_wrap)       = build_fan_chip_card(&crate::asset_resolver::get_asset_path("performance.svg"), i18n::t("fan_max"),    i18n::t("fan_max_sub"));
     let (custom_btn, custom_wrap) = build_fan_chip_card(&crate::asset_resolver::get_asset_path("custom.svg"),      i18n::t("fan_custom"), i18n::t("fan_custom_sub"));
+    auto_btn.set_tooltip_text(Some(i18n::t("fan_auto_tooltip")));
+    max_btn.set_tooltip_text(Some(i18n::t("fan_max_tooltip")));
+    custom_btn.set_tooltip_text(Some(i18n::t("fan_custom_tooltip")));
 
     let current_fan = crate::daemon_client::get_fan_mode_sync();
     if current_fan == "max" {
