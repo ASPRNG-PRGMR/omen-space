@@ -266,12 +266,13 @@ pub async fn get_diagnostics_async() -> Result<String, Box<dyn std::error::Error
 
 #[allow(dead_code)]
 pub fn get_diagnostics_sync() -> SystemStats {
-    let rt = get_runtime();
-    let json_str = rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_diagnostics_async()).await {
-            Ok(Ok(s)) => s,
-            _ => "{}".to_string()
-        }
+    let json_str = tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_diagnostics_async()).await {
+                Ok(Ok(s)) => s,
+                               _ => "{}".to_string()
+            }
+        })
     });
     serde_json::from_str(&json_str).unwrap_or_default()
 }
@@ -405,12 +406,13 @@ pub async fn generate_rgb_issue_async() -> Result<String, Box<dyn std::error::Er
 }
 
 pub fn get_hardware_specs_sync() -> HardwareSpecs {
-    let rt = get_runtime();
-    let json_str = rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_hardware_specs_async()).await {
-            Ok(Ok(s)) => s,
-            _ => "{}".to_string()
-        }
+    let json_str = tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_hardware_specs_async()).await {
+                Ok(Ok(s)) => s,
+                               _ => "{}".to_string()
+            }
+        })
     });
     let mut specs: HardwareSpecs = match serde_json::from_str(&json_str) {
         Ok(s) => s,
@@ -461,12 +463,13 @@ pub async fn get_power_profile_raw_async() -> Result<String, Box<dyn std::error:
 }
 
 pub fn get_power_profile_sync() -> String {
-    let rt = get_runtime();
-    rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_power_profile_async()).await {
-            Ok(Ok(s)) => s,
-            _ => "balanced".to_string()
-        }
+    tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_power_profile_async()).await {
+                Ok(Ok(s)) => s,
+                _ => "balanced".to_string()
+            }
+        })
     })
 }
 
@@ -478,12 +481,13 @@ pub async fn get_fan_mode_async() -> Result<String, Box<dyn std::error::Error>> 
 }
 
 pub fn get_fan_mode_sync() -> String {
-    let rt = get_runtime();
-    rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_fan_mode_async()).await {
-            Ok(Ok(s)) => s,
-            _ => "auto".to_string()
-        }
+    tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_fan_mode_async()).await {
+                Ok(Ok(s)) => s,
+                _ => "auto".to_string()
+            }
+        })
     })
 }
 
@@ -619,23 +623,25 @@ pub async fn get_rgb_state_async() -> Result<String, Box<dyn std::error::Error>>
 }
 
 pub fn get_rgb_state_sync() -> String {
-    let rt = get_runtime();
-    rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_rgb_state_async()).await {
-            Ok(Ok(s)) => s,
-            _ => "{}".to_string()
-        }
+    tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_rgb_state_async()).await {
+                Ok(Ok(s)) => s,
+                _ => "{}".to_string()
+            }
+        })
     })
 }
 
 /// Ping the daemon to check if it's alive — returns true if reachable.
 pub fn ping_daemon_sync() -> bool {
-    let rt = get_runtime();
-    rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), get_fan_mode_async()).await {
-            Ok(Ok(_)) => true,
-            _ => false
-        }
+    tokio::task::block_in_place(|| {
+        get_runtime().block_on(async {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), get_fan_mode_async()).await {
+                Ok(Ok(_)) => true,
+                _ => false
+            }
+        })
     })
 }
 
