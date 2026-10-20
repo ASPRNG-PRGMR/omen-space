@@ -616,8 +616,17 @@ async fn main() {
 
     let service = ksni::TrayService::new(tray);
     let handle = service.handle();
-    service.spawn();
 
+    // Spawn ksni on a dedicated permanent OS thread so it runs its blocking
+    // event loop indefinitely without blocking the Tokio runtime executor.
+    std::thread::Builder::new()
+    .name("ksni-tray".into())
+    .spawn(move || {
+        service.spawn();
+    })
+    .expect("Failed to spawn tray service thread");
+
+    // Main background update loop for refreshing tray tooltip/status states
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         let p = fetch_power_profile().await;
