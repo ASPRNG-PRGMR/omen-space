@@ -493,6 +493,57 @@ async fn set_gpu_mode(mode: &str) {
     }
 }
 
+async fn wait_for_status_notifier_watcher() {
+    let conn = match Connection::session().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Could not connect to session D-Bus to check StatusNotifierWatcher: {}", e);
+            return;
+        }
+    };
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let check = tokio::time::timeout(
+            std::time::Duration::from_millis(800),
+                                         conn.call_method(
+                                             Some("org.freedesktop.DBus"),
+                                                          "/org/freedesktop/DBus",
+                                                          Some("org.freedesktop.DBus"),
+                                                          "NameHasOwner",
+                                                          &"org.kde.StatusNotifierWatcher",
+                                         ),
+        )
+        .await;
+
+        match check {
+            Ok(Ok(msg)) => {
+                // Fixed: use .body().deserialize::<bool>() instead of body::<bool>()
+                if let Ok(has_owner) = msg.body().deserialize::<bool>() {
+                    if has_owner {
+                        info!("StatusNotifierWatcher is active on session D-Bus");
+                        return;
+                    }
+                }
+                log::debug!("StatusNotifierWatcher name has no owner yet");
+            }
+            Ok(Err(e)) => {
+                log::debug!("D-Bus check failed: {}", e);
+            }
+            Err(_) => {
+                log::debug!("StatusNotifierWatcher check timed out; retrying...");
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            warn!("Timed out waiting for StatusNotifierWatcher; spawning tray anyway");
+            return;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let _lock_file = match acquire_single_instance_lock() {
@@ -506,34 +557,17 @@ async fn main() {
     // Show our own info-level lines (hotkey received, overlay started/closed) in the
     // journal by default; RUST_LOG still overrides this.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,omen_tray=info"))
-        .init();
+    .init();
     info!("omen-tray başlatılıyor...");
 
     i18n::init();
 
     RUNTIME
-        .set(tokio::runtime::Handle::current())
-        .expect("Failed to initialize runtime handle");
+    .set(tokio::runtime::Handle::current())
+    .expect("Failed to initialize runtime handle");
 
-    let initial_power = fetch_power_profile().await.unwrap_or_else(|| "balanced".into());
-    let initial_fan = fetch_fan_mode().await.unwrap_or_else(|| "auto".into());
-    let initial_gpu = fetch_gpu_mode().await.unwrap_or_else(|| "hybrid".into());
-
-    let tray = Tray {
-        power_profile: initial_power,
-        fan_mode: initial_fan,
-        gpu_mode: initial_gpu,
-    };
-
-    let service = ksni::TrayService::new(tray);
-    let handle = service.handle();
-    service.spawn();
-
-    // No longer holding overlay in background
-
-    // Listen for OMEN key presses from the zero-overhead hotkey monitor
-    // Every failure is logged and the subscription is retried, so a slow D-Bus start or a
-    // restarted daemon can no longer leave the hotkeys silently dead until the next login.
+    // Listen for OMEN key presses from the zero-overhead hotkey monitor immediately,
+    // before waiting on the desktop tray watcher.
     tokio::spawn(async move {
         use futures::StreamExt;
         loop {
@@ -565,6 +599,24 @@ async fn main() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     });
+
+    // Wait until org.kde.StatusNotifierWatcher is responsive so ksni 0.2.2
+    // does not panic on a 1-second D-Bus NoReply timeout during login.
+    wait_for_status_notifier_watcher().await;
+
+    let initial_power = fetch_power_profile().await.unwrap_or_else(|| "balanced".into());
+    let initial_fan = fetch_fan_mode().await.unwrap_or_else(|| "auto".into());
+    let initial_gpu = fetch_gpu_mode().await.unwrap_or_else(|| "hybrid".into());
+
+    let tray = Tray {
+        power_profile: initial_power,
+        fan_mode: initial_fan,
+        gpu_mode: initial_gpu,
+    };
+
+    let service = ksni::TrayService::new(tray);
+    let handle = service.handle();
+    service.spawn();
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
