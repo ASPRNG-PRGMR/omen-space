@@ -1795,6 +1795,7 @@
             "has_four_zone_rgb": true,
             "has_per_key_rgb": false,
             "has_light_bar": false,
+            "rgb_zone_count": 1,
             "supports_undervolt": false,
             "supports_tcc_offset": true,
             "supports_power_limits": true,

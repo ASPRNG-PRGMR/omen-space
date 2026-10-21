@@ -63,6 +63,11 @@ pub struct ModelCapabilities {
     pub has_four_zone_rgb: bool,
     pub has_per_key_rgb: bool,
     pub has_light_bar: bool,
+    /// Physical keyboard lighting zones when the board is single-zone (1). The
+    /// hp-omen-extra driver exposes zone0..zone7 on every board, so this can't be
+    /// detected from sysfs; None keeps the existing 4/8-zone logic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb_zone_count: Option<u32>,
     
     // Power / Undervolt
     pub supports_undervolt: bool,
@@ -105,6 +110,7 @@ impl Default for ModelCapabilities {
             has_four_zone_rgb: true,
             has_per_key_rgb: false,
             has_light_bar: false,
+            rgb_zone_count: None,
             
             supports_undervolt: true,
             supports_tcc_offset: true,
