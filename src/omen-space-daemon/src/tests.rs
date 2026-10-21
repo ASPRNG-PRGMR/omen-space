@@ -100,6 +100,19 @@ mod tests {
         assert!(board["has_light_bar"].as_bool().unwrap_or(false));
     }
 
+    #[test]
+    fn board_8bd4_has_single_zone_rgb() {
+        let cap = crate::capabilities::detect("8BD4", "Victus by HP Gaming Laptop 16-s0xxx", "AMD Ryzen 7 7840HS");
+        assert_eq!(cap.rgb_zone_count, Some(1));
+    }
+
+    #[test]
+    fn rgb_zone_count_defaults_to_none_when_absent() {
+        let cap = crate::capabilities::detect("8D41", "", "");
+        assert_eq!(cap.rgb_zone_count, None);
+        assert_eq!(crate::capabilities::ModelCapabilities::default().rgb_zone_count, None);
+    }
+
     // ── Issue #264 — chassis_temp cache test ─────────────────────────────────
 
     #[test]

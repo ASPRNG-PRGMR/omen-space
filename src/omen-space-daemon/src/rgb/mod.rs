@@ -84,7 +84,10 @@ impl RgbHardware {
         let mut hw = Self::detect_raw();
         if !hw.is_new_driver {
             hw.zone_count = match zone_override {
-                Some(n) if n == 4 || n == 8 => n,
+                Some(n) if n == 1 || n == 4 || n == 8 => n,
+                // Single-zone boards from the capability DB: every extra zone
+                // write is a costly no-op WMI call (~7-10 ms each on 8BD4).
+                _ if hw.zone_count == 1 => 1,
                 _ => 4, // Honor the built-in default of 4
             };
         }
@@ -117,7 +120,9 @@ impl RgbHardware {
                 // capability DB (caps.has_four_zone_rgb, sourced from field
                 // reports) over the file-existence heuristic; fall back to
                 // the heuristic when the board isn't in the DB yet.
-                let mut zone_count = if caps.has_four_zone_rgb {
+                let mut zone_count = if caps.rgb_zone_count == Some(1) {
+                    1
+                } else if caps.has_four_zone_rgb {
                     4
                 } else if Path::new(&format!("{}/zone4", p)).exists()
                     || Path::new(&format!("{}/zone04", p)).exists() { 8 } else { 4 };
@@ -955,9 +960,10 @@ impl RgbService {
     async fn set_zone_count_override(&self, zone_count: i32) -> String {
         let normalized = match zone_count {
             0 => None,
+            1 => Some(1),
             4 => Some(4),
             8 => Some(8),
-            _ => return "FAIL: zone_count must be 0 (clear), 4, or 8".to_string(),
+            _ => return "FAIL: zone_count must be 0 (clear), 1, 4, or 8".to_string(),
         };
         {
             let mut g = self.inner.lock().await;
