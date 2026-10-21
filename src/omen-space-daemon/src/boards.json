@@ -840,7 +840,7 @@
             "supports_gpu_power_boost": true,
             "supports_advanced_optimus": false,
             "has_keyboard_backlight": true,
-            "has_four_zone_rgb": false,
+            "has_four_zone_rgb": true,
             "has_per_key_rgb": false,
             "has_light_bar": false,
             "supports_undervolt": true,
