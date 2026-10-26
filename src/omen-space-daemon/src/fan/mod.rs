@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 static SENSOR_TEMP_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 pub const THERMAL_PROTECTION_TRIGGER_TEMP: f64 = 95.0;
 pub const THERMAL_PROTECTION_RECOVER_TEMP: f64 = 82.0;
+/// Seconds (1 Hz samples) a thermal condition must persist before a desktop notice is shown (#327).
+const NOTICE_PERSIST_TICKS: u32 = 3;
 pub const AUTO_PEAK_HOLD_SECS: u64 = 15;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -470,6 +472,11 @@ impl FanService {
         let mut last_stall_alert: Option<std::time::Instant> = None;
         let mut last_unreadable_warn: Option<std::time::Instant> = None;
         let mut last_thermal_alert: Option<std::time::Instant> = None;
+        // Desktop-notification debounce (#327): fan intervention stays immediate, but
+        // user-facing notices require the condition to persist for a few seconds.
+        let mut warn_hot_ticks: u32 = 0;
+        let mut max_notice_pending = false;
+        let mut max_notice_sent = false;
 
         loop {
             interval.tick().await;
@@ -580,6 +587,11 @@ impl FanService {
 
                 // 90°C Thermal Warning Notification (#313): independent of 95°C Max-Fan Thermal Protection
                 if temp >= 90.0 && temp <= THERMAL_PROTECTION_TRIGGER_TEMP {
+                    warn_hot_ticks = warn_hot_ticks.saturating_add(1);
+                } else if temp < 85.0 {
+                    warn_hot_ticks = 0;
+                }
+                if temp >= 90.0 && temp <= THERMAL_PROTECTION_TRIGGER_TEMP && warn_hot_ticks >= NOTICE_PERSIST_TICKS {
                     let cooldown_ok = last_thermal_alert
                         .map(|t| t.elapsed() >= std::time::Duration::from_secs(120))
                         .unwrap_or(true);
@@ -615,19 +627,8 @@ impl FanService {
                         let _ = Self::thermal_protection_alert(&ctx, true).await;
                     }
                     
-                    tokio::spawn(async move {
-                        let msg = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
-                            "Yüksek sıcaklıklardan cihazınızı korumak için max fan modu aktif edildi."
-                        } else {
-                            "Max fan mode activated to protect your device from high temperatures."
-                        };
-                        let title = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
-                            "Termal Koruma Modu"
-                        } else {
-                            "Thermal Protection"
-                        };
-                        DesktopNotifier::send_notification(title, msg, 1).await;
-                    });
+                    max_notice_pending = true;
+                    max_notice_sent = false;
                 } else if state.thermal_protection_active {
                     if !state.thermal_protection_enabled || temp <= THERMAL_PROTECTION_RECOVER_TEMP {
                         let elapsed = state.thermal_protection_entered_at.elapsed().as_secs_f64();
@@ -644,6 +645,10 @@ impl FanService {
                         }
                         
                         let restore_msg = restore.clone();
+                        let send_recovery = max_notice_sent;
+                        max_notice_pending = false;
+                        max_notice_sent = false;
+                        if send_recovery {
                         tokio::spawn(async move {
                             let title = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
                                 "Termal Koruma Modu"
@@ -657,9 +662,29 @@ impl FanService {
                             };
                             DesktopNotifier::send_notification(title, &msg, 0).await;
                         });
+                        }
                     } else if state.mode != "max" {
                         Self::set_mode_internal(&mut state, "max").await;
                     }
+                }
+
+                if max_notice_pending && state.thermal_protection_active
+                    && state.thermal_protection_entered_at.elapsed().as_secs() >= NOTICE_PERSIST_TICKS as u64 {
+                    max_notice_pending = false;
+                    max_notice_sent = true;
+                    tokio::spawn(async move {
+                        let msg = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
+                            "Yüksek sıcaklıklardan cihazınızı korumak için max fan modu aktif edildi."
+                        } else {
+                            "Max fan mode activated to protect your device from high temperatures."
+                        };
+                        let title = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
+                            "Termal Koruma Modu"
+                        } else {
+                            "Thermal Protection"
+                        };
+                        DesktopNotifier::send_notification(title, msg, 1).await;
+                    });
                 }
 
                 (

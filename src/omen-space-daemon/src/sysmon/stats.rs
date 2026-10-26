@@ -249,7 +249,7 @@ pub fn fetch_system_stats() -> SystemStats {
     // Total System Power
     let mut real_pwr = false;
     if stats.cpu_pwr > 0.0 || stats.gpu_pwr > 0.0 {
-        stats.total_pwr = stats.cpu_pwr + stats.gpu_pwr + 11.5;
+        stats.total_pwr = stats.cpu_pwr.max(0.0) + stats.gpu_pwr.max(0.0) + 11.5;
         real_pwr = true;
     } else {
         // Fallback to battery discharge wattage

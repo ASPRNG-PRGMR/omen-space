@@ -220,6 +220,8 @@ impl HidPerKeyBackend {
     const SUB_SET_COLORS: u8 = 0x52;
     const SUB_COMMIT: u8 = 0x50;
     const STATIC_MODE_ID: u8 = 0x03;
+    const MCU_OP_SET_EFFECT: u8 = 0x03;
+    const MCU_RECORD_LEN: usize = 36;
     const KEYS_PER_SEGMENT: usize = 20;
     const TOTAL_KEY_COUNT: usize = 104;
 
@@ -370,6 +372,76 @@ impl HidPerKeyBackend {
         self.send_commit()
     }
 
+    /// Map an OMEN Space mode to the closest built-in effect of the Darfon keyboard MCU
+    /// (opcode 0x03, "SetLightingEffect", see arfelious/omen-rgb-linux docs/PROTOCOL.md).
+    /// Returns None for modes the MCU does not offer (reactive, ripple, custom, gradient...),
+    /// which keep using the software streaming path.
+    fn mcu_effect_for(&self, mode: &str, speed: u32, direction: &str, colors: &[String]) -> Option<[u8; Self::MCU_RECORD_LEN]> {
+        if self.device_pid != Some(0x54BF) {
+            return None;
+        }
+        let parse = |i: usize| parse_hex_color(colors.get(i).map(|s| s.as_str()).unwrap_or("FF0000"));
+        let led_speed: u8 = match speed {
+            0..=33 => 0,
+            34..=66 => 1,
+            _ => 2,
+        };
+        let dir: u8 = if direction == "rtl" { 2 } else { 3 };
+        let mut rec = [0u8; Self::MCU_RECORD_LEN];
+        rec[3] = led_speed;
+        rec[4] = 100;
+        rec[5] = dir;
+        fn put(rec: &mut [u8], slot: usize, c: (u8, u8, u8)) {
+            rec[24 + slot * 3] = c.0;
+            rec[25 + slot * 3] = c.1;
+            rec[26 + slot * 3] = c.2;
+        }
+        match mode {
+            // Wave only supports the built-in Rainbow preset on the MCU.
+            "wave_rainbow" => {
+                rec[0] = 10;
+                rec[1] = 5;
+                rec[2] = 4;
+            }
+            // Colour Cycle through red/green/blue.
+            "rainbow" | "cycle" => {
+                rec[0] = 4;
+                rec[1] = 1;
+                rec[2] = 2;
+                put(&mut rec, 0, (255, 0, 0));
+                put(&mut rec, 1, (0, 255, 0));
+                put(&mut rec, 2, (0, 0, 255));
+            }
+            "breathing" | "pulse" => {
+                rec[0] = 2;
+                put(&mut rec, 0, parse(0));
+            }
+            "starlight" => {
+                rec[0] = 7;
+                put(&mut rec, 0, parse(0));
+            }
+            "raindrop" => {
+                rec[0] = 12;
+                rec[7] = led_speed; // firmware requires RaindropFrequency == LedSpeed
+                put(&mut rec, 0, parse(0));
+            }
+            _ => return None,
+        }
+        Some(rec)
+    }
+
+    /// Send one effect record; the MCU keeps animating without any host repaint thread.
+    /// Volatile only (never issues the flash-store opcode).
+    fn send_mcu_effect(&self, record: &[u8; Self::MCU_RECORD_LEN]) -> bool {
+        let mut packet = [0u8; 64];
+        packet[0] = Self::MCU_OP_SET_EFFECT;
+        packet[1] = 0; // ALL_LED_AREA
+        packet[2] = Self::MCU_RECORD_LEN as u8;
+        packet[3] = 0;
+        packet[4..4 + Self::MCU_RECORD_LEN].copy_from_slice(record);
+        self.write_packet(&packet)
+    }
+
     fn set_zone_colors(&self, colors_hex: &[String]) -> bool {
         let mut colors = Vec::new();
         for c in colors_hex {
@@ -422,6 +494,10 @@ struct RgbConfig {
     /// which one the board actually has.
     #[serde(default)]
     zone_count_override: Option<u32>,
+    /// Experimental (#322): on Darfon 0d62:54bf per-key boards, use the keyboard MCU's
+    /// built-in effects instead of streaming frames from the daemon. Off by default.
+    #[serde(default)]
+    hw_effects: bool,
 }
 
 impl Default for RgbConfig {
@@ -435,6 +511,7 @@ impl Default for RgbConfig {
             power: true,
             win_lock: false,
             zone_count_override: None,
+            hw_effects: false,
         }
     }
 }
@@ -481,6 +558,8 @@ struct RgbInner {
     per_key_map: HashMap<String, serde_json::Value>,
     color_cache: HashMap<usize, String>,
     anim_step: f64,
+    /// Signature of the last effect record sent to the keyboard MCU (None = resend).
+    mcu_sig: Option<Vec<u8>>,
     wizard: Arc<crate::hid_wizard::HidPerKeyWizard>,
     desktop_rgb: crate::desktop_rgb::DesktopRgbController,
 }
@@ -511,7 +590,7 @@ impl RgbService {
         }
 
         let inner = Arc::new(Mutex::new(RgbInner {
-            hw, hid_per_key, config, per_key_map, color_cache: HashMap::new(), anim_step: 0.0, wizard, evdev_monitor, desktop_rgb,
+            hw, hid_per_key, config, per_key_map, color_cache: HashMap::new(), anim_step: 0.0, mcu_sig: None, wizard, evdev_monitor, desktop_rgb,
         }));
 
         let svc = Self { inner: inner.clone() };
@@ -657,6 +736,23 @@ impl RgbService {
             let colors = g.config.colors.clone();
             let mode = g.config.mode.clone();
 
+            // Hardware effects (#322): let the keyboard MCU animate by itself.
+            if has_per_key && g.config.hw_effects {
+                if let Some(rec) = g.hid_per_key.mcu_effect_for(&mode, speed, &direction, &colors) {
+                    let sig = rec.to_vec();
+                    if g.mcu_sig.as_ref() != Some(&sig) {
+                        if g.hid_per_key.send_mcu_effect(&rec) {
+                            g.mcu_sig = Some(sig);
+                        }
+                    }
+                    last_per_key_colors.clear();
+                    drop(g);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+            }
+            g.mcu_sig = None;
+
             let step_inc = (speed as f64 / 100.0) * 0.25;
             g.anim_step += step_inc;
             let step = g.anim_step;
@@ -786,6 +882,7 @@ impl RgbService {
             }
         }
 
+        g.mcu_sig = None;
         let power     = g.config.power;
         let brightness = g.config.brightness;
         let mode      = g.config.mode.clone();
@@ -939,6 +1036,7 @@ impl RgbService {
             "zone_count": g.hw.zone_count,
             "zone_count_override": g.config.zone_count_override,
             "per_key_available": g.hid_per_key.is_available(),
+            "hw_effects": g.config.hw_effects,
             "hid_device_pid": g.hid_per_key.device_pid.map(|p| format!("{:04X}", p)).unwrap_or_default(),
         });
         if !g.hw.available && !g.hid_per_key.is_available() {
@@ -971,6 +1069,20 @@ impl RgbService {
             g.config.save();
             g.hw = RgbHardware::detect_with_override(normalized);
             info!("SetZoneCountOverride: override={:?}, effective zone_count={}", normalized, g.hw.zone_count);
+        }
+        Self::apply_state(self.inner.clone()).await;
+        "OK".to_string()
+    }
+
+    /// SetHwEffects(enabled) — experimental (#322). On Darfon 0d62:54bf keyboards,
+    /// run supported effects on the keyboard MCU instead of streaming frames.
+    async fn set_hw_effects(&self, enabled: bool) -> String {
+        {
+            let mut g = self.inner.lock().await;
+            g.config.hw_effects = enabled;
+            g.mcu_sig = None;
+            g.config.save();
+            info!("SetHwEffects: {}", enabled);
         }
         Self::apply_state(self.inner.clone()).await;
         "OK".to_string()
@@ -1185,5 +1297,32 @@ fn compute_anim_color(
             (r, g, b)
         }
         _ => (r1, g1, b1),
+    }
+}
+
+#[cfg(test)]
+mod mcu_effect_tests {
+    use super::*;
+
+    fn backend(pid: Option<u16>) -> HidPerKeyBackend {
+        HidPerKeyBackend { hidraw_paths: vec![], device_pid: pid }
+    }
+
+    #[test]
+    fn mcu_effects_only_on_darfon() {
+        let c = vec!["00FF00".to_string()];
+        assert!(backend(Some(0x54BF)).mcu_effect_for("breathing", 50, "ltr", &c).is_some());
+        assert!(backend(None).mcu_effect_for("breathing", 50, "ltr", &c).is_none());
+    }
+
+    #[test]
+    fn mcu_effect_record_layout() {
+        let c = vec!["00FF00".to_string()];
+        let b = backend(Some(0x54BF));
+        let r = b.mcu_effect_for("raindrop", 100, "ltr", &c).unwrap();
+        assert_eq!((r[0], r[3], r[7]), (12, 2, 2));
+        assert_eq!(&r[24..27], &[0, 255, 0]);
+        assert!(b.mcu_effect_for("reactive", 50, "ltr", &c).is_none());
+        assert!(b.mcu_effect_for("wave", 50, "ltr", &c).is_none());
     }
 }

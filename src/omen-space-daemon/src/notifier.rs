@@ -98,9 +98,11 @@ impl DesktopNotifier {
             icon,
             "-t",
             &timeout_ms.to_string(),
-            title,
-            body,
         ]);
+        if urgency < 2 {
+            cmd.arg("--transient");
+        }
+        cmd.args([title, body]);
         match cmd.output() {
             Ok(out) if out.status.success() => true,
             Ok(out) => {
@@ -123,6 +125,11 @@ impl DesktopNotifier {
         if let Ok(connection) = Connection::session().await {
             let mut hints = std::collections::HashMap::new();
             hints.insert("urgency", zbus::zvariant::Value::U8(urgency));
+            // Routine notices must not pile up in the notification history (#327).
+            // Critical (urgency 2) notices stay persistent.
+            if urgency < 2 {
+                hints.insert("transient", zbus::zvariant::Value::Bool(true));
+            }
 
             match connection.call_method(
                 Some("org.freedesktop.Notifications"),
