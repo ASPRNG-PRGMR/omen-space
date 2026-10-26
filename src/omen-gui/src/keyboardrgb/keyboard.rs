@@ -647,9 +647,39 @@ pub fn build_interactive_keyboard(
     });
     bright_box.append(&bright_scale);
     
+    // Experimental (#322): run supported effects on the keyboard MCU (Darfon 0d62:54bf only).
+    // The MCU ignores brightness, so the slider is disabled while such an effect is active.
+    let hw_on = Rc::new(std::cell::Cell::new(false));
+    let is_darfon = detected_mode == KeyboardMode::PerKey && state_json_opt.as_ref()
+        .and_then(|j| j["hid_device_pid"].as_str())
+        .map(|p| p.eq_ignore_ascii_case("54BF"))
+        .unwrap_or(false);
+    let hw_box = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).build();
+    if is_darfon {
+        hw_on.set(state_json_opt.as_ref().and_then(|j| j["hw_effects"].as_bool()).unwrap_or(false));
+        let hw_label = gtk::Label::builder().label("Hardware effects").xalign(0.0).build();
+        label_sg.add_widget(&hw_label);
+        hw_box.append(&hw_label);
+        let hw_switch = gtk::Switch::builder().valign(gtk::Align::Center).active(hw_on.get()).build();
+        hw_switch.set_tooltip_text(Some("Experimental: run rainbow, cycle, breathing, starlight and raindrop on the keyboard itself (near-zero CPU, keeps running if the daemon stops). The keyboard ignores the brightness slider for these effects."));
+        hw_box.append(&hw_switch);
+        let hw_on_c = hw_on.clone();
+        let bright_c = bright_scale.clone();
+        let anim_state_hw = anim_state.clone();
+        hw_switch.connect_active_notify(move |sw| {
+            hw_on_c.set(sw.is_active());
+            crate::daemon_client::set_hw_effects_sync(sw.is_active());
+            let mode = anim_state_hw.borrow().0.clone();
+            bright_c.set_sensitive(!(sw.is_active() && mcu_effect_mode(&mode)));
+        });
+    }
+
     let sliders_container = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
     sliders_container.append(&speed_box);
     sliders_container.append(&bright_box);
+    if is_darfon {
+        sliders_container.append(&hw_box);
+    }
     controls_row.append(&sliders_container);
     
     bottom_box.append(&controls_row);
@@ -660,11 +690,14 @@ pub fn build_interactive_keyboard(
     let da_anim = drawing_area.clone();
     let anim_state_apply = anim_state.clone();
     
+    let bright_scale_apply = bright_scale.clone();
+    let hw_on_apply = hw_on.clone();
     let apply_anim: Rc<dyn Fn(&str, f64)> = Rc::new(move |mode: &str, speed: f64| {
         let mut ts = anim_state_apply.borrow_mut();
         ts.0 = mode.to_string();
         ts.1 = speed;
         drop(ts);
+        bright_scale_apply.set_sensitive(!(hw_on_apply.get() && mcu_effect_mode(mode)));
         
         let needs_anim = mode != "static" && mode != "per_key_custom";
         
@@ -693,3 +726,8 @@ pub fn build_interactive_keyboard(
 
 
 // ── OmenCore 4-Segment Lightbar Widget Builder ───────────────
+
+/// Modes the Darfon keyboard MCU can render by itself (mirrors the daemon's mapping, #322).
+fn mcu_effect_mode(mode: &str) -> bool {
+    matches!(mode, "rainbow" | "cycle" | "wave_rainbow" | "breathing" | "pulse" | "starlight" | "raindrop")
+}
