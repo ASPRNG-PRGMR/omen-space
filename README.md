@@ -16,6 +16,10 @@
 
 > **🎉 Special Thanks:** A huge shoutout to **[@aloshy0](https://github.com/aloshy0)** for the incredible "Quick HUD Overlay" PR! Your architectural design and contributions make OMEN Space the ultimate Linux gaming tool.
 
+> [!IMPORTANT]
+> **Status — moving to v2.1.8.** The published v2.1.8 release is **being refreshed** and will be updated once the current round of testing is finished. Until then, the fixes and features listed below only exist on the `main` branch.
+> **We recommend that everyone installs the bleeding-edge (canary) build** to get the v2.1.8 fixes — see [Quick Install](#-quick-install). Please report anything odd in the [issue tracker](https://github.com/yunusemreyl/omen-space/issues).
+
 ---
 
 ## ✨ Features
@@ -28,7 +32,9 @@ OMEN Space provides everything you need to unlock the full potential of your lap
 - 🚀 **Intel RAPL, Ryzen SMU & Undervolting:** Intel RAPL PL1/PL2 power limits (up to 150W/200W for HX & Core Ultra processors), direct MSR-based undervolting, TCC offset control, GPU TGP limits, and AMD Ryzen SMU tuning.
 - 🎮 **MUX Switch:** Native Optimus / dGPU routing switching for maximum gaming performance.
 - 🔍 **Scalable Interface (Ctrl+Shift+Plus / Ctrl+Shift+Minus):** Zoom the whole window between 80 % and 200 % (`Ctrl+Shift+0` resets) so the app stays readable on large or high-DPI monitors without going fullscreen. The factor is remembered and can also be set from Settings → Appearance.
-- 🌈 **RGB Studio:** Hardware-accelerated 4-Zone, Single-Zone, Light Bar, and USB HID Per-Key (`0d62:54bf`) keyboard lighting with wave, breathing, cycle, and static effects.
+- 🔋 **Battery Telemetry:** Battery charge and health are shown in System Monitor, the Quick HUD and the tray.
+- 🌈 **RGB Studio:** Hardware-accelerated 4-Zone, Single-Zone, Light Bar, and USB HID Per-Key (`0d62:54bf`) keyboard lighting with wave, breathing, cycle, and static effects. On Darfon per-key boards an **experimental *Hardware effects* switch** lets the keyboard's own MCU run rainbow, cycle, breathing, starlight and raindrop with near-zero CPU use (the MCU ignores the brightness slider for these; see [#322](https://github.com/yunusemreyl/omen-space/issues/322)).
+- 🔔 **Calmer Thermal Alerts:** Desktop notifications are transient (no more pile-up in your notification history), replace each other, and only appear when a hot condition lasts a few seconds. Fan protection itself still reacts instantly.
 - 🔄 **Smart BIOS Checker:** Automatically checks HP servers for your specific motherboard's latest firmware.
 
 ---
@@ -37,12 +43,17 @@ OMEN Space provides everything you need to unlock the full potential of your lap
 
 The easiest way to install OMEN Space is via our 1-line web installer. It detects your distro, handles dependencies, and compiles everything automatically.
 
+**Recommended for now — bleeding-edge (canary), includes all v2.1.8 fixes:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/yunusemreyl/omen-space/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/yunusemreyl/omen-space/main/install.sh | sudo bash -s -- --canary
 ```
 
-> **Pro Tip:** To install the bleeding-edge canary version directly, append `--canary`:  
-> `curl -sSL https://raw.githubusercontent.com/yunusemreyl/omen-space/main/install.sh | sudo bash -s -- --canary`
+**Stable release** (will be refreshed after testing; does *not* yet contain the latest v2.1.8 fixes):
+```bash
+curl -sSL https://raw.githubusercontent.com/yunusemreyl/omen-space/main/install.sh | sudo bash -s -- --stable
+```
+
+> **Note:** Running the installer without a flag asks you to choose a channel interactively.
 
 <details>
 <summary><b>📦 Alternative Installation Methods (Manual, AUR, NixOS)</b></summary>
@@ -74,6 +85,21 @@ sudo ./setup.sh uninstall
 ```
 *(If you deleted the folder, just run `git clone https://github.com/yunusemreyl/omen-space.git` again first).*
 </details>
+
+---
+
+## 🆕 What's New in v2.1.8 (on `main`)
+
+- **Fixed:** GUI closing itself every ~30 seconds (heartbeat crash) and related Quick Access panel desync.
+- **Fixed:** False overheating alerts from brief CPU spikes; thermal notices are transient, debounced and replaceable.
+- **Fixed:** System Monitor total power no longer counts GPU "sleeping/idle" markers; GPU load is reported; an unavailable GPU temperature shows `--` instead of a made-up value; FAN label now shows *Custom* and *EC* correctly.
+- **New:** Battery charge/health telemetry, UI scaling shortcuts, experimental MCU hardware effects for Darfon per-key keyboards.
+
+## 🧪 Help Wanted
+
+- **OMEN MAX 16 owners (8D41 / 8D87):** please try *Hardware effects* in RGB Studio and tell us how it behaves on [#322](https://github.com/yunusemreyl/omen-space/issues/322).
+- **Board verification:** open a *"Verify my laptop"* issue with the diagnostics report and your `board_name` to get your laptop added to the verified list.
+- Still open: independent CPU/GPU fan curves, GPU idle-state reporting during short workloads, and a few items tracked in [#316](https://github.com/yunusemreyl/omen-space/issues/316).
 
 ---
 
@@ -132,6 +158,6 @@ OMEN Space is licensed under the **GPL-3.0 License** and is driven by an incredi
 - **[yunusemreyl](https://github.com/yunusemreyl)** - Lead Developer
 - **[tuxov](https://github.com/tuxov)** - Kernel Module Lead
 
-Thanks to all our contributors: [@aloshy0](https://github.com/aloshy0), [@CodesRahul96](https://github.com/CodesRahul96), [@xcellsior](https://github.com/xcellsior), [@TitoTFP](https://github.com/TitoTFP), [@SafSaf0999](https://github.com/SafSaf0999), [@yijean34-source](https://github.com/yijean34-source), and the projects `omencore` & `omen-rgb-keyboard`.
+Thanks to all our contributors: [@aloshy0](https://github.com/aloshy0), [@CodesRahul96](https://github.com/CodesRahul96), [@xcellsior](https://github.com/xcellsior), [@TitoTFP](https://github.com/TitoTFP), [@SafSaf0999](https://github.com/SafSaf0999), [@yijean34-source](https://github.com/yijean34-source), [@ManOfDiamond](https://github.com/ManOfDiamond), [@ASPRNG-PRGMR](https://github.com/ASPRNG-PRGMR), [@WoofahRayetCode](https://github.com/WoofahRayetCode), [@henfiber](https://github.com/henfiber) (detailed reviews), [@ktarxhun](https://github.com/ktarxhun), and the projects `omencore`, `omen-rgb-keyboard` & [`omen-rgb-linux`](https://github.com/arfelious/omen-rgb-linux) (Darfon MCU protocol).
 
 *Disclaimer: OMEN Space is an independent project and is NOT affiliated with or endorsed by HP.*
