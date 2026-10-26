@@ -389,8 +389,12 @@ impl HidPerKeyBackend {
         let dir: u8 = if direction == "rtl" { 2 } else { 3 };
         let mut rec = [0u8; Self::MCU_RECORD_LEN];
         rec[3] = led_speed;
-        rec[4] = 100;
+        // Match the frames captured from OMEN Gaming Hub: brightness 0 (ignored by the
+        // firmware), medium ripple size, RaindropFrequency mirroring LedSpeed.
+        rec[4] = 0;
         rec[5] = dir;
+        rec[6] = 1;
+        rec[7] = led_speed;
         fn put(rec: &mut [u8], slot: usize, c: (u8, u8, u8)) {
             rec[24 + slot * 3] = c.0;
             rec[25 + slot * 3] = c.1;
@@ -422,7 +426,6 @@ impl HidPerKeyBackend {
             }
             "raindrop" => {
                 rec[0] = 12;
-                rec[7] = led_speed; // firmware requires RaindropFrequency == LedSpeed
                 put(&mut rec, 0, parse(0));
             }
             _ => return None,
@@ -433,6 +436,12 @@ impl HidPerKeyBackend {
     /// Send one effect record; the MCU keeps animating without any host repaint thread.
     /// Volatile only (never issues the flash-store opcode).
     fn send_mcu_effect(&self, record: &[u8; Self::MCU_RECORD_LEN]) -> bool {
+        // OGH always sends "lighting on" (0x09, BLength 1, arg 0x01) right before the effect.
+        let mut on = [0u8; 64];
+        on[0] = 0x09;
+        on[2] = 1;
+        on[4] = 0x01;
+        self.write_packet(&on);
         let mut packet = [0u8; 64];
         packet[0] = Self::MCU_OP_SET_EFFECT;
         packet[1] = 0; // ALL_LED_AREA
@@ -1321,6 +1330,10 @@ mod mcu_effect_tests {
         let b = backend(Some(0x54BF));
         let r = b.mcu_effect_for("raindrop", 100, "ltr", &c).unwrap();
         assert_eq!((r[0], r[3], r[7]), (12, 2, 2));
+        // Byte-identical to the OGH capture of 'wave, rainbow, fast, left-to-right'.
+        let w = b.mcu_effect_for("wave_rainbow", 100, "ltr", &c).unwrap();
+        assert_eq!(&w[..10], &[0x0A, 0x05, 0x04, 0x02, 0x00, 0x03, 0x01, 0x02, 0x00, 0x00]);
+        assert!(w[10..].iter().all(|&x| x == 0));
         assert_eq!(&r[24..27], &[0, 255, 0]);
         assert!(b.mcu_effect_for("reactive", 50, "ltr", &c).is_none());
         assert!(b.mcu_effect_for("wave", 50, "ltr", &c).is_none());
