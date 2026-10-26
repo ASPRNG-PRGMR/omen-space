@@ -929,7 +929,11 @@ pub fn build_page(is_general: bool) -> gtk::Box {
         cpu_ui.pwr_label.set_label(&format!("{:.1}W", stats.cpu_pwr));
         cpu_ui.fan_label.set_label(&format!("{} RPM", if stats.fan1_rpm > 0 { stats.fan1_rpm } else { stats.fan_rpm }));
 
-        gpu_ui.temp_label.set_label(&format!("{}°C", g_avg));
+        if stats.gpu_temp <= 0 {
+            gpu_ui.temp_label.set_label("--");
+        } else {
+            gpu_ui.temp_label.set_label(&format!("{}°C", g_avg));
+        }
         gpu_ui.load_bar.set_fraction(stats.gpu_load);
         gpu_ui.load_pct_label.set_label(&format!("{}%", (stats.gpu_load * 100.0) as i32));
         if stats.gpu_pwr <= -1.5 {

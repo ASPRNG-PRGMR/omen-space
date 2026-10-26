@@ -505,7 +505,9 @@ impl OverlayWindow {
 
     pub fn update_telemetry(&self, stats: &SystemStats) {
         self.cpu_val_label.set_label(&format!("{}°C | {:.0}W", stats.cpu_temp, stats.cpu_pwr));
-        self.gpu_val_label.set_label(&format!("{}°C | {:.0}W", stats.gpu_temp, stats.gpu_pwr));
+        let gpu_t = if stats.gpu_temp > 0 { format!("{}°C", stats.gpu_temp) } else { "--".to_string() };
+        let gpu_w = if stats.gpu_pwr >= 0.0 { format!("{:.0}W", stats.gpu_pwr) } else { "--".to_string() };
+        self.gpu_val_label.set_label(&format!("{} | {}", gpu_t, gpu_w));
 
         if stats.fan1_rpm > 0 || stats.fan2_rpm > 0 {
             self.fan_val_label.set_label(&format!("{} / {} RPM", stats.fan1_rpm, stats.fan2_rpm));

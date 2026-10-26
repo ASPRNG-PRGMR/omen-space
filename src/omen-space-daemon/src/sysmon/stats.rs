@@ -211,6 +211,9 @@ pub fn fetch_system_stats() -> SystemStats {
                 if let Some(p) = metrics.power {
                     stats.gpu_pwr = p;
                 }
+                if let Some(u) = metrics.util {
+                    stats.gpu_load = u;
+                }
             }
         }
         else {
@@ -267,7 +270,7 @@ pub fn fetch_system_stats() -> SystemStats {
     }
 
     if stats.cpu_temp == 0 { stats.cpu_temp = 45; }
-    if stats.gpu_temp == 0 { stats.gpu_temp = stats.cpu_temp.saturating_sub(4); }
+    // gpu_temp == 0 means "unavailable" (asleep / unsampled); do not fabricate a reading.
     if stats.cpu_pwr == 0.0 && !real_pwr { stats.cpu_pwr = stats.total_pwr * 0.45; }
     if stats.gpu_pwr == 0.0 && !real_pwr { stats.gpu_pwr = stats.total_pwr * 0.15; }
 

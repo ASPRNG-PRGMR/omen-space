@@ -199,6 +199,7 @@ pub trait Rgb {
     async fn set_global(&self, power_val: bool, brightness_val: i32, direction_str: &str) -> zbus::Result<String>;
     async fn get_state(&self) -> zbus::Result<String>;
     async fn set_per_key_colors(&self, colors_json: &str) -> zbus::Result<String>;
+    async fn set_hw_effects(&self, enabled: bool) -> zbus::Result<String>;
     async fn start_per_key_wizard(&self) -> zbus::Result<String>;
     async fn light_key_index(&self, index: u32, hex_color: &str) -> zbus::Result<String>;
     async fn record_key_mapping(&self, index: u32, key_name: &str) -> zbus::Result<String>;

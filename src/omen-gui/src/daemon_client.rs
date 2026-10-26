@@ -237,6 +237,17 @@ pub fn set_mode_sync(mode_str: &str, speed_val: i32) {
     });
 }
 
+pub fn set_hw_effects_sync(enabled: bool) {
+    let rt = get_runtime();
+    rt.spawn(async move {
+        if let Ok(conn) = get_conn().await {
+            if let Ok(proxy) = RgbProxy::new(&conn).await {
+                let _ = proxy.set_hw_effects(enabled).await;
+            }
+        }
+    });
+}
+
 pub fn set_global_sync(power_val: bool, brightness_val: i32, direction_str: &str) {
     let direction = direction_str.to_string();
     let rt = get_runtime();

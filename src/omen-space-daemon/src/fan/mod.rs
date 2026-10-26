@@ -31,6 +31,8 @@ pub struct FanState {
     pub thermal_protection_active: bool,
     pub thermal_protection_enabled: bool,
     pub thermal_protection_entered_at: std::time::Instant,
+    /// Suppress the EC-handoff desktop notice for the next mode change (automatic restore, #327).
+    pub suppress_ec_notice: bool,
     pub pre_protection_mode: Option<String>,
     /// When the user explicitly sets a percentage (e.g. "fan 50"),
     /// store it here so the monitor loop re-applies it as keep-alive
@@ -93,6 +95,7 @@ impl FanService {
             thermal_protection_active: false,
             thermal_protection_enabled: config.thermal_protection_enabled,
             thermal_protection_entered_at: std::time::Instant::now(),
+            suppress_ec_notice: false,
             pre_protection_mode: None,
             manual_target_pct: None,
             last_keepalive: std::time::Instant::now(),
@@ -586,12 +589,12 @@ impl FanService {
                 }
 
                 // 90°C Thermal Warning Notification (#313): independent of 95°C Max-Fan Thermal Protection
-                if temp >= 90.0 && temp <= THERMAL_PROTECTION_TRIGGER_TEMP {
+                if temp >= 90.0 && (temp <= THERMAL_PROTECTION_TRIGGER_TEMP || !state.thermal_protection_enabled) {
                     warn_hot_ticks = warn_hot_ticks.saturating_add(1);
                 } else if temp < 85.0 {
                     warn_hot_ticks = 0;
                 }
-                if temp >= 90.0 && temp <= THERMAL_PROTECTION_TRIGGER_TEMP && warn_hot_ticks >= NOTICE_PERSIST_TICKS {
+                if temp >= 90.0 && (temp <= THERMAL_PROTECTION_TRIGGER_TEMP || !state.thermal_protection_enabled) && warn_hot_ticks >= NOTICE_PERSIST_TICKS {
                     let cooldown_ok = last_thermal_alert
                         .map(|t| t.elapsed() >= std::time::Duration::from_secs(120))
                         .unwrap_or(true);
@@ -610,7 +613,7 @@ impl FanService {
                                     format!("CPU/GPU temperature reached {}°C.", alert_temp),
                                 )
                             };
-                            DesktopNotifier::send_notification(title, &msg, 1).await;
+                            DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 1).await;
                         });
                     }
                 }
@@ -638,7 +641,9 @@ impl FanService {
                         let restore = state.pre_protection_mode.clone().unwrap_or_else(|| "auto".to_string());
                         state.last_written_duty = None;
                         state.last_auto_pct = 0;
+                        state.suppress_ec_notice = !max_notice_sent;
                         Self::set_mode_internal(&mut state, &restore).await;
+                        state.suppress_ec_notice = false;
                         
                         if let Some(ctx) = state.signal_ctx.clone() {
                             let _ = Self::thermal_protection_alert(&ctx, false).await;
@@ -660,7 +665,7 @@ impl FanService {
                             } else {
                                 format!("Temperature normalized ({}°C). Fans set to {}.", temp as i32, restore_msg)
                             };
-                            DesktopNotifier::send_notification(title, &msg, 0).await;
+                            DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 0).await;
                         });
                         }
                     } else if state.mode != "max" {
@@ -683,7 +688,7 @@ impl FanService {
                         } else {
                             "Thermal Protection"
                         };
-                        DesktopNotifier::send_notification(title, msg, 1).await;
+                        DesktopNotifier::send_notification_tagged(Some("thermal"), title, msg, 1).await;
                     });
                 }
 
@@ -943,7 +948,8 @@ impl FanService {
             return true;
         }
 
-        if mode == "ec" {
+        let suppress_ec = std::mem::take(&mut state.suppress_ec_notice);
+        if mode == "ec" && !suppress_ec {
             tokio::spawn(async move {
                 DesktopNotifier::send_notification("Omen Space", "Donanım (EC) kontrolü devredildi. Watchdog mekanizması nedeniyle fanların BIOS'a teslim edilmesi 120 saniye kadar sürebilir.", 0).await;
             });

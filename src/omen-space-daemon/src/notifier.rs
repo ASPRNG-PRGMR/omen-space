@@ -3,6 +3,9 @@ use std::process::Command;
 use glob::glob;
 use zbus::Connection;
 
+/// Last notification id per condition tag, so a repeated/updated notice replaces the old one (#327).
+static NOTIFICATION_IDS: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
+
 pub struct DesktopNotifier;
 
 impl DesktopNotifier {
@@ -121,6 +124,15 @@ impl DesktopNotifier {
     }
 
     pub async fn send_notification(title: &str, body: &str, urgency: u8) {
+        Self::send_notification_tagged(None, title, body, urgency).await;
+    }
+
+    /// Like `send_notification`, but notices sharing the same `tag` replace each other
+    /// instead of accumulating in the notification history.
+    pub async fn send_notification_tagged(tag: Option<&str>, title: &str, body: &str, urgency: u8) {
+        let replaces_id: u32 = tag
+            .and_then(|t| NOTIFICATION_IDS.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(t).copied())))
+            .unwrap_or(0);
         info!("Sending desktop notification: {} - {}", title, body);
         if let Ok(connection) = Connection::session().await {
             let mut hints = std::collections::HashMap::new();
@@ -138,7 +150,7 @@ impl DesktopNotifier {
                 "Notify",
                 &(
                     "OMENSpace",
-                    0u32,
+                    replaces_id,
                     "preferences-desktop-display",
                     title,
                     body,
@@ -147,7 +159,14 @@ impl DesktopNotifier {
                     5000i32, // expire_timeout in ms
                 ),
             ).await {
-                Ok(_) => return,
+                Ok(reply) => {
+                    if let (Some(t), Ok(id)) = (tag, reply.body().deserialize::<u32>()) {
+                        if let Ok(mut g) = NOTIFICATION_IDS.lock() {
+                            g.get_or_insert_with(Default::default).insert(t.to_string(), id);
+                        }
+                    }
+                    return;
+                }
                 Err(e) => warn!("D-Bus Notify call failed on session bus: {}", e),
             }
         }

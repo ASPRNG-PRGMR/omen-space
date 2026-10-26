@@ -66,6 +66,30 @@ pub fn build_page() -> (adw::PreferencesPage, Option<adw::PreferencesGroup>, Opt
     std_kb_group.add(&std_kb_grid);
     page.add(&std_kb_group);
 
+    // Experimental (#322): run supported effects on the keyboard MCU (Darfon 0d62:54bf only).
+    if is_per_key && detected_mode == KeyboardMode::PerKey {
+        let is_darfon = state_json_opt.as_ref()
+            .and_then(|j| j["hid_device_pid"].as_str())
+            .map(|p| p.eq_ignore_ascii_case("54BF"))
+            .unwrap_or(false);
+        if is_darfon {
+            let hw_group = adw::PreferencesGroup::builder().build();
+            let hw_row = adw::SwitchRow::builder()
+                .title("Hardware effects (experimental)")
+                .subtitle("Run rainbow, cycle, breathing, starlight and raindrop on the keyboard itself. Uses almost no CPU, but ignores the brightness slider.")
+                .build();
+            let hw_on = state_json_opt.as_ref()
+                .and_then(|j| j["hw_effects"].as_bool())
+                .unwrap_or(false);
+            hw_row.set_active(hw_on);
+            hw_row.connect_active_notify(|row| {
+                crate::daemon_client::set_hw_effects_sync(row.is_active());
+            });
+            hw_group.add(&hw_row);
+            page.add(&hw_group);
+        }
+    }
+
     if let Some(state_json) = &state_json_opt {
         if let Some(mode_str) = state_json["mode"].as_str() {
             let speed = state_json["speed"].as_f64().unwrap_or(50.0);

@@ -52,6 +52,7 @@ pub struct GpuMetrics {
     pub has_clients: bool,
     pub temp: Option<i32>,
     pub power: Option<f64>,
+    pub util: Option<f64>,
 }
 
 static NVML_INSTANCE: OnceLock<Mutex<Option<nvml_wrapper::Nvml>>> = OnceLock::new();
@@ -97,7 +98,7 @@ pub fn fetch_gpu_metrics_with_timeout() -> Option<GpuMetrics> {
 
         // CRITICAL BATTERY SAVER: Do not wake the GPU if it is runtime suspended.
         if check_nvidia_state() == Some(false) {
-            let res = GpuMetrics { has_clients: false, temp: None, power: None };
+            let res = GpuMetrics { has_clients: false, temp: None, power: None, util: None };
             let _ = tx.send(res.clone());
             if let Ok(mut c_guard) = CACHED_GPU_METRICS.lock() {
                 *c_guard = Some((res, std::time::Instant::now()));
@@ -127,8 +128,12 @@ pub fn fetch_gpu_metrics_with_timeout() -> Option<GpuMetrics> {
                     
                     let mut temp = None;
                     let mut power = None;
+                    let mut util = None;
                     
                     if has_clients {
+                        if let Ok(u) = device.utilization_rates() {
+                            util = Some(u.gpu as f64 / 100.0);
+                        }
                         if let Ok(t) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
                             temp = Some(t as i32);
                         }
@@ -136,7 +141,7 @@ pub fn fetch_gpu_metrics_with_timeout() -> Option<GpuMetrics> {
                             power = Some(p as f64 / 1000.0);
                         }
                     }
-                    let res = GpuMetrics { has_clients, temp, power };
+                    let res = GpuMetrics { has_clients, temp, power, util };
                     let _ = tx.send(res.clone());
                     if let Ok(mut c_guard) = CACHED_GPU_METRICS.lock() {
                         *c_guard = Some((res, std::time::Instant::now()));
