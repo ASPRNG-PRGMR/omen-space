@@ -255,3 +255,188 @@ pub trait AppProfiles {
     async fn add_profile(&self, process_name: &str, power_profile: &str, fan_mode: &str) -> zbus::Result<String>;
     async fn remove_profile(&self, process_name: &str) -> zbus::Result<String>;
 }
+
+// ── Graphical Session Environment Auto-Repair ─────────────────────────────────
+
+#[cfg(unix)]
+fn is_unix_socket_alive(path: &std::path::Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// Repairs `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `WAYLAND_DISPLAY`,
+/// `XAUTHORITY`, and `DISPLAY` when a process (`omen-tray`, `omen-overlay`, or
+/// `omen-gui`) is launched from `su`/`sudo`/`pkexec` or across desktop session
+/// restarts where stale sockets (e.g. a dead `wayland-0` alongside a live
+/// `wayland-1`) exist in `/run/user/<uid>`.
+pub fn repair_graphical_session_env() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::path::{Path, PathBuf};
+
+        let uid = match std::fs::metadata("/proc/self") {
+            Ok(m) => m.uid(),
+            Err(_) => return,
+        };
+        if uid == 0 {
+            return;
+        }
+
+        let default_runtime = format!("/run/user/{}", uid);
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .filter(|s| !s.is_empty() && Path::new(s).is_dir())
+            .unwrap_or_else(|| {
+                if Path::new(&default_runtime).is_dir() {
+                    unsafe {
+                        std::env::set_var("XDG_RUNTIME_DIR", &default_runtime);
+                    }
+                }
+                default_runtime
+            });
+
+        // 1. Session D-Bus socket
+        let has_dbus = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+            .ok()
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_dbus {
+            let bus_socket = format!("{}/bus", runtime_dir);
+            if Path::new(&bus_socket).exists() {
+                unsafe {
+                    std::env::set_var(
+                        "DBUS_SESSION_BUS_ADDRESS",
+                        format!("unix:path={}", bus_socket),
+                    );
+                }
+            }
+        }
+
+        // 2. Wayland display socket: verify current WAYLAND_DISPLAY accepts a connection;
+        // if unset or stale (ECONNREFUSED), pick the newest live wayland-* socket.
+        let current_wayland_ok = std::env::var("WAYLAND_DISPLAY").ok().is_some_and(|wd| {
+            let trimmed = wd.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            let sock_path = if trimmed.starts_with('/') {
+                PathBuf::from(trimmed)
+            } else {
+                Path::new(&runtime_dir).join(trimmed)
+            };
+            is_unix_socket_alive(&sock_path)
+        });
+
+        if !current_wayland_ok {
+            let mut candidates: Vec<(std::time::SystemTime, String, PathBuf)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&runtime_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("wayland-") && !name.ends_with(".lock") {
+                        let path = entry.path();
+                        let mtime = entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        candidates.push((mtime, name, path));
+                    }
+                }
+            }
+            candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+            let mut found_live = false;
+            for (_mtime, name, path) in candidates {
+                if is_unix_socket_alive(&path) {
+                    unsafe {
+                        std::env::set_var("WAYLAND_DISPLAY", &name);
+                    }
+                    found_live = true;
+                    break;
+                }
+            }
+            if !found_live {
+                unsafe {
+                    std::env::remove_var("WAYLAND_DISPLAY");
+                }
+            }
+        }
+
+        // 3. XAUTHORITY: if unset or pointing to a missing file, find the newest active
+        // session auth file in /run/user/<uid> (xauth_* on KDE/SDDM, .mutter-Xwaylandauth.*
+        // on GNOME) or fall back to ~/.Xauthority.
+        let current_xauth_ok = std::env::var("XAUTHORITY")
+            .ok()
+            .is_some_and(|p| !p.trim().is_empty() && Path::new(p.trim()).is_file());
+        if !current_xauth_ok {
+            let mut auth_candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&runtime_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("xauth_") || name.starts_with(".mutter-Xwaylandauth.") {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let mtime = entry
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            auth_candidates.push((mtime, path));
+                        }
+                    }
+                }
+            }
+            auth_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+            if let Some((_, newest_auth)) = auth_candidates.first() {
+                unsafe {
+                    std::env::set_var("XAUTHORITY", newest_auth);
+                }
+            } else if let Ok(home) = std::env::var("HOME") {
+                let fallback = Path::new(&home).join(".Xauthority");
+                if fallback.is_file() {
+                    unsafe {
+                        std::env::set_var("XAUTHORITY", fallback);
+                    }
+                }
+            }
+        }
+
+        // 4. X11 DISPLAY: verify current DISPLAY socket in /tmp/.X11-unix/X<N> is alive.
+        let current_display_ok = std::env::var("DISPLAY").ok().is_some_and(|disp| {
+            let num = disp
+                .trim()
+                .trim_start_matches(':')
+                .split('.')
+                .next()
+                .unwrap_or("");
+            !num.is_empty()
+                && num.chars().all(|c| c.is_ascii_digit())
+                && is_unix_socket_alive(Path::new(&format!("/tmp/.X11-unix/X{}", num)))
+        });
+
+        if !current_display_ok {
+            let mut x_candidates: Vec<(std::time::SystemTime, String, PathBuf)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("/tmp/.X11-unix") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if let Some(num) = name.strip_prefix('X') {
+                        if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                            let path = entry.path();
+                            let mtime = entry
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            x_candidates.push((mtime, format!(":{}", num), path));
+                        }
+                    }
+                }
+            }
+            x_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+            for (_mtime, disp, path) in x_candidates {
+                if is_unix_socket_alive(&path) {
+                    unsafe {
+                        std::env::set_var("DISPLAY", disp);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}

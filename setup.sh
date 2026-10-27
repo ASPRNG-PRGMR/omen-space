@@ -451,7 +451,8 @@ EOF
         user_id=$(id -u "$SUDO_USER")
         if [ -d "/run/user/$user_id" ]; then
             echo "Starting omen-tray for $SUDO_USER..."
-            su - "$SUDO_USER" -c "DISPLAY=${DISPLAY:-:0} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0} XDG_RUNTIME_DIR=/run/user/$user_id /usr/bin/omen-tray >/dev/null 2>&1 &" || true
+            killall -q -u "$SUDO_USER" omen-tray 2>/dev/null || true
+            su - "$SUDO_USER" -c "XDG_RUNTIME_DIR=/run/user/$user_id /usr/bin/omen-tray >/dev/null 2>&1 &" || true
         fi
     fi
 

@@ -28,6 +28,8 @@ fn main() {
         return;
     }
 
+    omen_types::repair_graphical_session_env();
+
     // Prefer Wayland, but fall back to X11 instead of panicking on an X11-only session.
     // An explicit GDK_BACKEND from the user's environment always wins.
     if std::env::var_os("GDK_BACKEND").is_none() {

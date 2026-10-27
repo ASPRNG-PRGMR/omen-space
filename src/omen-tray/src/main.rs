@@ -46,6 +46,8 @@ fn acquire_single_instance_lock() -> Option<std::fs::File> {
 }
 
 fn spawn_gui() {
+    omen_types::repair_graphical_session_env();
+
     let spawned: Option<std::process::Child> = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|dir| dir.join("omen-gui")))
@@ -54,7 +56,7 @@ fn spawn_gui() {
                 Command::new(gui_path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::inherit())
                     .spawn()
                     .ok()
             } else {
@@ -65,7 +67,7 @@ fn spawn_gui() {
             Command::new("omen-gui")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
                 .spawn()
                 .ok()
         })
@@ -73,7 +75,7 @@ fn spawn_gui() {
             Command::new("/usr/bin/omen-gui")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
                 .spawn()
                 .ok()
         });
@@ -100,6 +102,7 @@ static OVERLAY_TOGGLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// the HUD.
 fn spawn_overlay() {
     let _guard = OVERLAY_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    omen_types::repair_graphical_session_env();
 
     // SAFETY: getuid() has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -118,7 +121,7 @@ fn spawn_overlay() {
         return;
     }
 
-    // Prefer the binary next to this one, then fall back to $PATH.
+    // Prefer the binary next to this one, then fall back to $PATH and /usr/bin.
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Some(sibling) = std::env::current_exe()
         .ok()
@@ -129,6 +132,7 @@ fn spawn_overlay() {
         }
     }
     candidates.push(std::path::PathBuf::from("omen-overlay"));
+    candidates.push(std::path::PathBuf::from("/usr/bin/omen-overlay"));
 
     let mut last_error: Option<(std::path::PathBuf, std::io::Error)> = None;
     for candidate in candidates {
@@ -579,6 +583,8 @@ async fn wait_for_status_notifier_watcher() {
 
 #[tokio::main]
 async fn main() {
+    omen_types::repair_graphical_session_env();
+
     let _lock_file = match acquire_single_instance_lock() {
         Some(file) => file,
         None => {

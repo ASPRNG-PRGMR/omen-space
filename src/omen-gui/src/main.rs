@@ -21,6 +21,8 @@ mod asset_resolver;
 const APP_ID: &str = "org.hp.OmenSpace";
 
 fn ensure_tray_running() {
+    omen_types::repair_graphical_session_env();
+
     let is_running = std::process::Command::new("pgrep")
         .arg("-x")
         .arg("omen-tray")
@@ -72,6 +74,8 @@ fn ensure_tray_running() {
 }
 
 fn main() {
+    omen_types::repair_graphical_session_env();
+
     let rt = daemon_client::get_runtime();
     let _guard = rt.enter();
 
@@ -155,6 +159,7 @@ fn build_ui(app: &adw::Application) {
     ensure_tray_running();
 
     if let Some(window) = app.active_window().or_else(|| app.windows().first().cloned()) {
+        window.set_visible(false);
         window.set_visible(true);
         window.present();
         return;
@@ -173,11 +178,14 @@ fn build_ui(app: &adw::Application) {
     ui_scale::init(&window);
     ui_scale::install_shortcuts(app);
 
-    // Close button hides the window instead of killing the process (Minimize to Tray)
-    window.connect_close_request(move |win| {
+    // Close button ensures the tray stays active, then closes the GUI window cleanly
+    // so reopening from the tray or OMEN key creates a fresh, KWin-focused Wayland surface
+    // and avoids burning CPU in background polling timers while closed.
+    let app_for_close = app.clone();
+    window.connect_close_request(move |_win| {
         ensure_tray_running();
-        win.set_visible(false);
-        gtk::glib::Propagation::Stop
+        app_for_close.quit();
+        gtk::glib::Propagation::Proceed
     });
 
     render_ui(&window, "performance");

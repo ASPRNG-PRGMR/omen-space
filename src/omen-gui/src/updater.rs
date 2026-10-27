@@ -317,6 +317,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
     let ver_row = adw::ActionRow::builder()
         .title(i18n::t("current_version"))
         .subtitle(i18n::t("updater_installed_sub"))
+        .use_markup(false)
         .build();
     let app_icon = gtk::Image::builder()
         .icon_name("application-x-executable-symbolic")
@@ -357,6 +358,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
     let status_row = adw::ActionRow::builder()
         .title(i18n::t("checking_updates_title"))
         .subtitle(i18n::t("updater_checking_sub"))
+        .use_markup(false)
         .build();
     let status_icon = gtk::Image::builder()
         .icon_name("emblem-synchronizing-symbolic")
@@ -406,6 +408,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
     let changelog_expander = adw::ExpanderRow::builder()
         .title(i18n::t("release_notes"))
         .subtitle("GitHub main")
+        .use_markup(false)
         .visible(false)
         .build();
     let changelog_icon = gtk::Image::builder()
@@ -447,6 +450,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
     let step_row = adw::ActionRow::builder()
         .title(i18n::t("updating"))
         .subtitle(i18n::t("updater_step_1"))
+        .use_markup(false)
         .build();
     let step_spinner = gtk::Spinner::builder()
         .spinning(false)
@@ -503,6 +507,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
     let term_expander = adw::ExpanderRow::builder()
         .title(i18n::t("updater_terminal_title"))
         .subtitle(i18n::t("updater_terminal_sub"))
+        .use_markup(false)
         .expanded(false)
         .build();
     let term_icon = gtk::Image::builder()
@@ -1011,6 +1016,7 @@ pub fn build_page(window: &adw::ApplicationWindow) -> gtk::Box {
         } else {
             i18n::t("updater_dkms_missing")
         })
+        .use_markup(false)
         .build();
     let dkms_icon = gtk::Image::builder()
         .icon_name(if dkms_loaded {
