@@ -6,8 +6,33 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Resolve calling user when launched via pkexec (where SUDO_USER is unset but PKEXEC_UID is set)
+if [[ -z "${SUDO_USER:-}" && -n "${PKEXEC_UID:-}" && "${PKEXEC_UID}" != "0" ]]; then
+    SUDO_USER="$(id -un "$PKEXEC_UID" 2>/dev/null || true)"
+    export SUDO_USER
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --non-interactive|-y)
+            export OMEN_NONINTERACTIVE=1
+            ;;
+        --from-gui)
+            export OMEN_UPDATER_UI=1
+            export OMEN_NONINTERACTIVE=1
+            ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+emit_step() {
+    local step_num="$1"
+    local pct="$2"
+    local msg="$3"
+    echo "::OMEN_STEP::${step_num}::${pct}::${msg}"
+}
 
 install_dependencies() {
     echo "====================================="
@@ -18,7 +43,8 @@ install_dependencies() {
         dnf install -y gcc pkgconf-pkg-config gtk4-devel libadwaita-devel gtk4-layer-shell-devel systemd-devel make kernel-devel kernel-headers dbus-devel dkms hidapi-devel
     elif command -v apt-get &> /dev/null; then
         echo "Detected Debian/Ubuntu. Installing dependencies via apt..."
-        apt-get update
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq || apt-get update
         # FIX #252: libgtk4-layer-shell-dev is unavailable on some Linux Mint / older Ubuntu
         # versions where the package hasn't been backported yet. Install mandatory packages
         # first, then try the layer-shell package gracefully so the build doesn't abort.
@@ -121,6 +147,10 @@ check_conflicting_power_managers() {
     echo ""
     echo "   If you want to keep ${CONFLICTS[*]}, cancel now and manage the conflict manually."
     echo ""
+    if [[ "${OMEN_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+        echo "   Non-interactive mode active: proceeding automatically..."
+        return 0
+    fi
     read -r -p "   Continue installation anyway? [y/N]: " REPLY
     case "$REPLY" in
         [yY][eE][sS]|[yY]) echo "   Proceeding..." ;;
@@ -188,81 +218,107 @@ remove_legacy_omenctl() {
     echo "Legacy cleanup complete."
 }
 
+rustc_meets_min_version() {
+    local rustc_bin="$1"
+    [[ -x "$rustc_bin" ]] || return 1
+    local ver major minor
+    ver=$("$rustc_bin" --version 2>/dev/null | awk '{print $2}')
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    [[ -n "$major" && -n "$minor" ]] || return 1
+    if [[ "$major" -gt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -ge 85 ]]; }; then
+        return 0
+    fi
+    return 1
+}
+
 do_build() {
+    emit_step 3 50 "Compiling OmenSpace workspace (cargo build --release)..."
     echo "====================================="
     echo " Building OMENSpace (Daemon, CLI, GUI, Tray)"
     echo "====================================="
-    export CARGO_HOME=/root/.cargo
-    export RUSTUP_HOME=/root/.rustup
-    
-    # Check for cargo, instruct user to install rustup if missing
-    if ! command -v cargo &> /dev/null; then
-        if [[ -n "$SUDO_USER" ]] && su - "$SUDO_USER" -c "command -v cargo" &> /dev/null; then
-            echo "cargo found for user $SUDO_USER, proceeding with build..."
-        else
-            echo "cargo is not installed. Installing Rust via rustup automatically..."
-            if [[ -n "$SUDO_USER" ]]; then
-                su - "$SUDO_USER" -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-            else
-                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                export PATH="$HOME/.cargo/bin:$PATH"
+
+    # FIX #268: On openSUSE Tumbleweed, libhidapi-hidraw is not available as a
+    # dynamic shared library. Switch to linux-static-hidraw before building.
+    if command -v zypper &> /dev/null; then
+        echo "[fix #268] openSUSE detected: switching daemon hidapi backend to linux-static-hidraw..."
+        sed -i 's/linux-shared-hidraw/linux-static-hidraw/g' \
+            "$SCRIPT_DIR/src/omen-space-daemon/Cargo.toml" || true
+    fi
+
+    local user_home=""
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        user_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+    fi
+
+    # 1. Prefer SUDO_USER's rustup toolchain if present
+    if [[ -n "$user_home" && -x "$user_home/.cargo/bin/cargo" ]]; then
+        if ! rustc_meets_min_version "$user_home/.cargo/bin/rustc"; then
+            if [[ -x "$user_home/.cargo/bin/rustup" ]]; then
+                echo "Updating Rust toolchain for $SUDO_USER to stable (>= 1.85)..."
+                su - "$SUDO_USER" -c "export PATH=\"\$HOME/.cargo/bin:\$PATH\"; rustup update stable" || true
             fi
+        fi
+        if rustc_meets_min_version "$user_home/.cargo/bin/rustc"; then
+            echo "Using Rust toolchain from $user_home/.cargo/bin (user: $SUDO_USER)..."
+            export CARGO_HOME="$user_home/.cargo"
+            export RUSTUP_HOME="${user_home}/.rustup"
+            export PATH="$user_home/.cargo/bin:$PATH"
+            cargo build --release
+            return 0
         fi
     fi
 
+    # 2. Check root's ~/.cargo/bin or system PATH
+    export CARGO_HOME=/root/.cargo
+    export RUSTUP_HOME=/root/.rustup
+    export PATH="/root/.cargo/bin:$PATH"
+
     if ! command -v cargo &> /dev/null; then
-        echo "cargo not found for root. Attempting to build as SUDO_USER if available..."
-        if [[ -n "$SUDO_USER" ]]; then
-            chown -R "$SUDO_USER":"$SUDO_USER" "$SCRIPT_DIR"
-            su - "$SUDO_USER" -c "export PATH=\"\$HOME/.cargo/bin:\$PATH\"; cd '$SCRIPT_DIR' && cargo build --release"
-        else
-            echo "Error: cargo is not installed or not in PATH for root."
-            exit 1
-        fi
-    else
-        # FIX #234: Verify rustc >= 1.85 (required for edition 2024 transitive deps).
-        # toml_datetime 1.1.1+spec-1.1.0 uses edition 2024 internally; older toolchains
-        # fail with "feature edition2024 is required" — a confusing error for end-users.
-        _RUSTC_VER=$(rustc --version 2>/dev/null | awk '{print $2}')
-        _RUSTC_MAJOR=$(echo "$_RUSTC_VER" | cut -d. -f1)
-        _RUSTC_MINOR=$(echo "$_RUSTC_VER" | cut -d. -f2)
-        if [[ "$_RUSTC_MAJOR" -lt 1 ]] || { [[ "$_RUSTC_MAJOR" -eq 1 ]] && [[ "$_RUSTC_MINOR" -lt 85 ]]; }; then
-            echo ""
-            echo "❌ ERROR: Rust toolchain too old (found: $_RUSTC_VER, required: ≥ 1.85)"
-            echo ""
-            echo "   OMENSpace depends on packages that require Rust edition 2024."
-            echo "   Please upgrade your Rust toolchain:"
-            echo ""
-            echo "     rustup update stable"
-            echo ""
-            echo "   If you installed Rust via your distro package manager (apt/dnf/pacman),"
-            echo "   it may be out of date. Install the official toolchain via rustup instead:"
-            echo ""
-            echo "     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-            echo ""
-            exit 1
-        fi
-        # FIX #268: On openSUSE Tumbleweed, libhidapi-hidraw is not available as a
-        # dynamic shared library. The linker fails with:
-        #   rust-lld: error: undefined symbol: hid_send_output_report
-        # Workaround: switch to the linux-static-hidraw feature so hidapi is linked
-        # statically (hidraw via libhidraw-dev) rather than relying on the shared lib.
-        if command -v zypper &> /dev/null; then
-            echo "[fix #268] openSUSE detected: switching daemon hidapi backend to linux-static-hidraw..."
-            sed -i 's/linux-shared-hidraw/linux-static-hidraw/g' \
-                "$SCRIPT_DIR/src/omen-space-daemon/Cargo.toml" || true
-        fi
-        cargo build --release
+        echo "cargo is not installed. Installing Rust via rustup automatically..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        export PATH="/root/.cargo/bin:$PATH"
     fi
+
+    local active_rustc
+    active_rustc=$(command -v rustc 2>/dev/null || true)
+    if ! rustc_meets_min_version "$active_rustc"; then
+        if command -v rustup &> /dev/null; then
+            echo "Updating Rust toolchain via rustup..."
+            rustup update stable || true
+        else
+            echo "System Rust toolchain is older than 1.85; installing modern toolchain via rustup..."
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            export PATH="/root/.cargo/bin:$PATH"
+        fi
+        active_rustc=$(command -v rustc 2>/dev/null || true)
+    fi
+
+    if ! rustc_meets_min_version "$active_rustc"; then
+        local found_ver
+        found_ver=$("$active_rustc" --version 2>/dev/null | awk '{print $2}' || echo "none")
+        echo ""
+        echo "❌ ERROR: Rust toolchain too old (found: $found_ver, required: ≥ 1.85)"
+        echo "   Please upgrade your Rust toolchain: rustup update stable"
+        exit 1
+    fi
+
+    cargo build --release
 }
 
 do_install() {
+    emit_step 4 75 "Installing binaries & system configuration..."
     echo "====================================="
     echo " Stopping existing services"
     echo "====================================="
     systemctl stop omen-space-daemon.service 2>/dev/null || true
     killall omen-tray 2>/dev/null || true
-    killall omen-gui 2>/dev/null || true
+    killall omen-overlay 2>/dev/null || true
+    if [[ "${OMEN_UPDATER_UI:-0}" != "1" ]]; then
+        killall omen-gui 2>/dev/null || true
+    else
+        echo "Updater UI active: keeping running omen-gui instance alive during file replacement."
+    fi
 
     echo "====================================="
     echo " Installing system files"
@@ -323,6 +379,23 @@ do_install() {
     install -m 755 "$SCRIPT_DIR/setup.sh" /usr/share/omen-space/setup.sh
     echo "$SCRIPT_DIR" > /etc/omen-space/repo_path
 
+    # Record installed build metadata (version + git commit + timestamp)
+    local pkg_ver git_sha git_short now_iso
+    pkg_ver=$(grep -m1 '^version[[:space:]]*=' "$SCRIPT_DIR/src/omen-gui/Cargo.toml" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || echo "unknown")
+    git_sha=$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+    git_short=$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")
+    now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+    cat <<EOF > /etc/omen-space/build_info.json
+{
+  "version": "${pkg_ver}",
+  "commit_sha": "${git_sha}",
+  "commit_short": "${git_short}",
+  "updated_at": "${now_iso}",
+  "repo_path": "${SCRIPT_DIR}"
+}
+EOF
+    chmod 644 /etc/omen-space/build_info.json 2>/dev/null || true
+
     cat <<EOF > /etc/xdg/autostart/omenspace-tray.desktop
 [Desktop Entry]
 Name=OMEN SPACE Tray
@@ -344,6 +417,7 @@ EOF
         usermod -aG omen-hw "$SUDO_USER" || true
     fi
 
+    emit_step 4 82 "Building & installing DKMS kernel drivers (hp-wmi & hp-omen-extra)..."
     echo "====================================="
     echo " Installing DKMS Kernel Driver"
     echo "====================================="
@@ -352,6 +426,7 @@ EOF
     ./setup.sh install || true
     cd ..
 
+    emit_step 5 94 "Starting omen-space-daemon service & verifying connection..."
     echo "====================================="
     echo " Starting omen-space-daemon service"
     echo "====================================="
@@ -384,6 +459,13 @@ EOF
     echo " Cleaning build cache to free disk space..."
     echo "====================================="
     rm -rf target src/*/target
+
+    # Restore file ownership if building inside a user's home directory
+    if [[ -n "$SUDO_USER" && "$SUDO_USER" != "root" && "$SCRIPT_DIR" == /home/* ]]; then
+        chown -R "$SUDO_USER":"$SUDO_USER" "$SCRIPT_DIR" 2>/dev/null || true
+    fi
+
+    emit_step 6 100 "Update completed successfully!"
 }
 
 do_uninstall() {
@@ -451,33 +533,71 @@ do_uninstall() {
     echo "Uninstallation complete!"
 }
 
-do_update() {
+prepare_update_repo() {
+    emit_step 1 12 "Fetching latest OmenSpace source from GitHub..."
     echo "====================================="
-    echo " Updating OMENSpace..."
+    echo " Updating OMENSpace repository..."
     echo "====================================="
+
     if [ ! -f "Cargo.toml" ]; then
+        local saved_repo=""
+        if [ -f "/etc/omen-space/repo_path" ]; then
+            saved_repo=$(tr -d '\r\n' < /etc/omen-space/repo_path || true)
+        fi
+        if [ -n "$saved_repo" ] && [ -f "$saved_repo/Cargo.toml" ] && [ -d "$saved_repo/.git" ]; then
+            echo "Using existing repository at $saved_repo..."
+            export OMEN_POST_PULL=0
+            exec bash "$saved_repo/setup.sh" update "$@"
+        fi
+
         CACHE_REPO="/var/cache/omen-space/repo"
         echo "Source tree not found in $(pwd); fetching latest repository into $CACHE_REPO..."
         mkdir -p "/var/cache/omen-space"
         if [ -d "$CACHE_REPO/.git" ]; then
-            git -C "$CACHE_REPO" fetch --all --prune && git -C "$CACHE_REPO" reset --hard origin/main
+            git -c safe.directory="$CACHE_REPO" -C "$CACHE_REPO" fetch --all --prune && \
+            git -c safe.directory="$CACHE_REPO" -C "$CACHE_REPO" reset --hard origin/main
         else
             rm -rf "$CACHE_REPO"
             git clone --depth 1 https://github.com/yunusemreyl/omen-space.git "$CACHE_REPO"
         fi
         mkdir -p /etc/omen-space
         echo "$CACHE_REPO" > /etc/omen-space/repo_path
-        exec bash "$CACHE_REPO/setup.sh" update
+        export OMEN_POST_PULL=1
+        exec bash "$CACHE_REPO/setup.sh" update "$@"
     fi
-    if [ -d ".git" ]; then
-        git pull || echo "Warning: Failed to pull latest changes. Building current version..."
-    else
-        echo "Warning: Not a git repository. Building current version..."
+
+    if [ -d ".git" ] && [ "${OMEN_POST_PULL:-0}" != "1" ]; then
+        echo "Pulling latest changes from origin/main in $SCRIPT_DIR..."
+        # Revert automated build-time edits so git pull never aborts on Cargo.toml/Cargo.lock
+        git -c safe.directory="$SCRIPT_DIR" checkout -- src/omen-space-daemon/Cargo.toml Cargo.lock 2>/dev/null || true
+
+        if git -c safe.directory="$SCRIPT_DIR" fetch origin main --prune; then
+            if ! git -c safe.directory="$SCRIPT_DIR" merge --ff-only FETCH_HEAD; then
+                if [[ "$SCRIPT_DIR" == "/var/cache/omen-space/repo" ]] || [[ "${OMEN_UPDATER_UI:-0}" == "1" ]]; then
+                    echo "Fast-forward merge not possible; resetting working tree to origin/main..."
+                    git -c safe.directory="$SCRIPT_DIR" reset --hard FETCH_HEAD
+                else
+                    echo "Warning: Local repository has diverged from origin/main; building current checkout."
+                fi
+            fi
+            export OMEN_POST_PULL=1
+            exec bash "$SCRIPT_DIR/setup.sh" update "$@"
+        else
+            echo "Warning: Failed to fetch from origin/main. Building current checkout..."
+        fi
     fi
+}
+
+do_update() {
+    prepare_update_repo "$@"
+
+    emit_step 2 28 "Checking system dependencies & cleaning old DKMS modules..."
+    check_conflicting_power_managers
+    install_dependencies
+    remove_legacy_omenctl
 
     # FIX #254: Remove ALL previously installed DKMS versions for hp-omen-extra
     # before rebuilding so that old modules don't accumulate across updates.
-    # The user previously had to do this manually each time.
     echo "====================================="
     echo " Cleaning up old DKMS modules..."
     echo "====================================="
@@ -498,9 +618,11 @@ do_update() {
 
 # Subcommand routing
 COMMAND=${1:-install}
+shift || true
 
 case "$COMMAND" in
     install)
+        emit_step 1 15 "Checking system dependencies..."
         check_conflicting_power_managers
         install_dependencies
         remove_legacy_omenctl
@@ -511,13 +633,10 @@ case "$COMMAND" in
         do_uninstall
         ;;
     update)
-        check_conflicting_power_managers
-        install_dependencies
-        remove_legacy_omenctl
-        do_update
+        do_update "$@"
         ;;
     *)
-        echo "Usage: sudo ./setup.sh [install|update|uninstall]"
+        echo "Usage: sudo ./setup.sh [install|update|uninstall] [--non-interactive] [--from-gui]"
         echo "  install   : Builds and installs OMENSpace (cleans legacy omenctl)"
         echo "  update    : Pulls latest git changes, builds, and reinstalls"
         echo "  uninstall : Completely removes OMENSpace from the system"
