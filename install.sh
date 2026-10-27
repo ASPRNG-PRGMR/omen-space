@@ -115,9 +115,9 @@ if [ "$CHANNEL" == "stable" ]; then
         LATEST_TAG=$(curl -s "https://api.github.com/repos/$REPO/tags" 2>/dev/null | grep -m 1 '"name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
     fi
 
-    # Fallback to v2.1.8 if API query failed or was empty
+    # Fallback to v2.2.0 if API query failed or was empty
     if [ -z "$LATEST_TAG" ]; then
-        LATEST_TAG="v2.1.8"
+        LATEST_TAG="v2.2.0"
     fi
 
     TARGET_REF="$LATEST_TAG"

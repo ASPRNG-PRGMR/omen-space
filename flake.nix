@@ -15,7 +15,7 @@
         packages = {
           omen-space = pkgs.rustPlatform.buildRustPackage {
             pname = "omen-space";
-            version = "2.1.8";
+            version = "2.2.0";
 
             src = ./.;
 
@@ -135,7 +135,7 @@
             boot.extraModulePackages = [
               (pkgs.linuxPackages.callPackage ({ stdenv, kernel }: stdenv.mkDerivation {
                 pname = "omen-space-driver";
-                version = "2.1.8";
+                version = "2.2.0";
                 src = "${self.packages.${system}.omen-space.src}/driver";
                 hardeningDisable = [ "pic" ];
                 nativeBuildInputs = kernel.moduleBuildDependencies;
