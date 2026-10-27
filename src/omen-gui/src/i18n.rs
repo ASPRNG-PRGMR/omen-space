@@ -555,6 +555,7 @@ fn translate_tr(key: &'static str) -> &'static str {
 
         // RGB & Lightbar additions
         "kb_global_color" => "Tüm Klavyenin Rengi (Global Color):",
+        "kb_reset_default" => "Varsayılana Sıfırla",
         "lightbar_title" => "4-Segment Lightbar (Ön / Kasa Işık Şeridi)",
         "lightbar_sync_btn" => "Tüm Segmentleri Boya",
         "lb_seg_1" => "Bölge 1 (Sol)",
@@ -966,6 +967,7 @@ fn translate_en(key: &'static str) -> &'static str {
 
         // RGB & Lightbar additions
         "kb_global_color" => "Global Keyboard Color:",
+        "kb_reset_default" => "Reset Default",
         "lightbar_title" => "4-Segment Lightbar (Front / Chassis Strip)",
         "lb_seg_1" => "Zone 1 (Left)",
         "lb_seg_2" => "Zone 2 (Mid-Left)",
@@ -1342,6 +1344,7 @@ fn translate_es(key: &'static str) -> &'static str {
 
         // RGB & Lightbar additions
         "kb_global_color" => "Color global del teclado:",
+        "kb_reset_default" => "Restablecer",
         "lightbar_title" => "Barra de luz de 4 segmentos (frontal / tira del chasis)",
         "lb_seg_1" => "Zona 1 (izquierda)",
         "lb_seg_2" => "Zona 2 (centro-izquierda)",

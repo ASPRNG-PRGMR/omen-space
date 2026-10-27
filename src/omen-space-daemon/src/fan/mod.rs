@@ -475,9 +475,10 @@ impl FanService {
         let mut last_stall_alert: Option<std::time::Instant> = None;
         let mut last_unreadable_warn: Option<std::time::Instant> = None;
         let mut last_thermal_alert: Option<std::time::Instant> = None;
-        // Desktop-notification debounce (#327): fan intervention stays immediate, but
-        // user-facing notices require the condition to persist for a few seconds.
-        let mut warn_hot_ticks: u32 = 0;
+        // Desktop-notification debounce (#327, #338): fan intervention stays immediate,
+        // but user-facing notices require the condition to persist continuously for 3 seconds.
+        let mut warn_hot_since: Option<std::time::Instant> = None;
+        let mut warn_episode_notified = false;
         let mut max_notice_pending = false;
         let mut max_notice_sent = false;
 
@@ -588,34 +589,34 @@ impl FanService {
                     stall_ticks = 0;
                 }
 
-                // 90°C Thermal Warning Notification (#313): independent of 95°C Max-Fan Thermal Protection
-                if temp >= 90.0 && (temp <= THERMAL_PROTECTION_TRIGGER_TEMP || !state.thermal_protection_enabled) {
-                    warn_hot_ticks = warn_hot_ticks.saturating_add(1);
-                } else if temp < 85.0 {
-                    warn_hot_ticks = 0;
-                }
-                if temp >= 90.0 && (temp <= THERMAL_PROTECTION_TRIGGER_TEMP || !state.thermal_protection_enabled) && warn_hot_ticks >= NOTICE_PERSIST_TICKS {
-                    let cooldown_ok = last_thermal_alert
-                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(120))
-                        .unwrap_or(true);
-                    if cooldown_ok && DesktopNotifier::are_thermal_alerts_enabled() {
-                        last_thermal_alert = Some(std::time::Instant::now());
-                        let alert_temp = temp as i32;
-                        tokio::spawn(async move {
-                            let (title, msg) = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
-                                (
-                                    "Yüksek Sıcaklık Uyarısı",
-                                    format!("CPU/GPU sıcaklığı {}°C seviyesine ulaştı.", alert_temp),
-                                )
-                            } else {
-                                (
-                                    "High Temperature Warning",
-                                    format!("CPU/GPU temperature reached {}°C.", alert_temp),
-                                )
-                            };
-                            DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 1).await;
-                        });
-                    }
+                // 90°C Thermal Warning Notification (#313, #338): independent of 95°C Max-Fan Thermal Protection.
+                // Require 3 seconds of continuous eligibility (resetting immediately if temp drops below 90°C
+                // or enters active 95°C thermal protection), while keeping 85°C hysteresis for episode reset.
+                let now_inst = std::time::Instant::now();
+                if Self::update_advisory_thermal_warn_state(
+                    temp,
+                    state.thermal_protection_enabled,
+                    now_inst,
+                    &mut warn_hot_since,
+                    &mut warn_episode_notified,
+                    &mut last_thermal_alert,
+                    DesktopNotifier::are_thermal_alerts_enabled(),
+                ) {
+                    let alert_temp = temp as i32;
+                    tokio::spawn(async move {
+                        let (title, msg) = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
+                            (
+                                "Yüksek Sıcaklık Uyarısı",
+                                format!("CPU/GPU sıcaklığı {}°C seviyesine ulaştı.", alert_temp),
+                            )
+                        } else {
+                            (
+                                "High Temperature Warning",
+                                format!("CPU/GPU temperature reached {}°C.", alert_temp),
+                            )
+                        };
+                        DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 1).await;
+                    });
                 }
                 
                 // Thermal Protection Logic ALWAYS uses raw temp for safety
@@ -665,7 +666,9 @@ impl FanService {
                             } else {
                                 format!("Temperature normalized ({}°C). Fans set to {}.", temp as i32, restore_msg)
                             };
-                            DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 0).await;
+                            // Use normal urgency (1) so GNOME Shell displays and expires the transient
+                            // banner instead of retaining low-urgency transient notices in history (#338).
+                            DesktopNotifier::send_notification_tagged(Some("thermal"), title, &msg, 1).await;
                         });
                         }
                     } else if state.mode != "max" {
@@ -903,6 +906,61 @@ impl FanService {
         }
     }
 
+    /// Evaluate and update advisory >90°C thermal warning debounce and episode hysteresis (#338).
+    ///
+    /// - Continuous eligibility requires `temp >= 90.0` (and not superseded by active 95°C thermal protection)
+    ///   for at least `NOTICE_PERSIST_TICKS` seconds without any dip below 90°C.
+    /// - Once notified in an episode, re-notification requires either cooling below 85°C (hysteresis reset)
+    ///   or 120 seconds elapsed while remaining continuously >= 90°C for at least 3 seconds.
+    pub(crate) fn update_advisory_thermal_warn_state(
+        temp: f64,
+        thermal_protection_enabled: bool,
+        now: std::time::Instant,
+        warn_hot_since: &mut Option<std::time::Instant>,
+        warn_episode_notified: &mut bool,
+        last_thermal_alert: &mut Option<std::time::Instant>,
+        alerts_enabled: bool,
+    ) -> bool {
+        let eligible = temp >= 90.0
+            && (temp <= THERMAL_PROTECTION_TRIGGER_TEMP || !thermal_protection_enabled);
+        if !eligible {
+            *warn_hot_since = None;
+            if temp < 85.0 {
+                *warn_episode_notified = false;
+            }
+            return false;
+        }
+
+        let since = *warn_hot_since.get_or_insert(now);
+        if now.saturating_duration_since(since)
+            < std::time::Duration::from_secs(NOTICE_PERSIST_TICKS as u64)
+        {
+            return false;
+        }
+
+        if !alerts_enabled {
+            return false;
+        }
+
+        let cooldown_ok = last_thermal_alert
+            .map(|t| now.saturating_duration_since(t) >= std::time::Duration::from_secs(120))
+            .unwrap_or(true);
+
+        // First alert of a >=85°C episode fires after 3s continuous >=90°C (subject to 120s cooldown).
+        // Within the same >=85°C episode (without cooling below 85°C), a repeat reminder requires
+        // 120s of continuous >=90°C eligibility.
+        let sustained_reminder =
+            now.saturating_duration_since(since) >= std::time::Duration::from_secs(120);
+
+        if cooldown_ok && (!*warn_episode_notified || sustained_reminder) {
+            *warn_episode_notified = true;
+            *last_thermal_alert = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+
     async fn has_pwm_fallback(state: &FanState) -> bool {
         if let Some(ref hwmon) = state.hwmon_path {
             sysfs_exists(hwmon.join("pwm1")).await
@@ -948,12 +1006,7 @@ impl FanService {
             return true;
         }
 
-        let suppress_ec = std::mem::take(&mut state.suppress_ec_notice);
-        if mode == "ec" && !suppress_ec {
-            tokio::spawn(async move {
-                DesktopNotifier::send_notification("Omen Space", "Donanım (EC) kontrolü devredildi. Watchdog mekanizması nedeniyle fanların BIOS'a teslim edilmesi 120 saniye kadar sürebilir.", 0).await;
-            });
-        }
+        let _suppress_ec = std::mem::take(&mut state.suppress_ec_notice);
 
         // Step 1: Write pwm1_enable
         let mut ok = false;
@@ -983,6 +1036,9 @@ impl FanService {
             }
             if ok {
                 info!("Set pwm1_enable={} (mode={})", pwm_enable_val, mode);
+                if mode == "ec" {
+                    info!("Hardware (EC) fan control delegated; BIOS watchdog handoff may take up to 120s.");
+                }
             }
         }
         
@@ -1141,6 +1197,7 @@ impl FanService {
             supports_custom = Self::has_pwm_fallback(&state).await || sysfs_exists(hwmon.join("fan1_target")).await;
         }
         let thermal_protection = state.thermal_protection_active;
+        let thermal_protection_enabled = state.thermal_protection_enabled;
 
         let info = serde_json::json!({
             "available": is_available,
@@ -1149,7 +1206,8 @@ impl FanService {
             "supports_custom": supports_custom,
             "custom_curve": state.custom_curve_json,
             "fans": fans_data,
-            "thermal_protection": thermal_protection
+            "thermal_protection": thermal_protection,
+            "thermal_protection_enabled": thermal_protection_enabled
         });
         
         serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string())
@@ -1174,12 +1232,20 @@ impl FanService {
             Self::save_config(mode_to_save, custom_curve_json).await;
             "OK".to_string()
         } else {
-            let err_msg = format!(
-                "Fan modu '{}' uygulanamadı. EC (Embedded Controller) komut arayüzüne erişilemiyor.",
-                mode
-            );
+            let is_tr = std::env::var("LANG").unwrap_or_default().starts_with("tr");
+            let (ctx, err_msg) = if is_tr {
+                (
+                    "Fan Modu Değiştirilemedi",
+                    format!("Fan modu '{}' uygulanamadı. EC (Embedded Controller) komut arayüzüne erişilemiyor.", mode),
+                )
+            } else {
+                (
+                    "Failed to Change Fan Mode",
+                    format!("Fan mode '{}' could not be applied. Hardware fan control interface is unavailable.", mode),
+                )
+            };
             warn!("{}", err_msg);
-            crate::notifier::DesktopNotifier::notify_error("Fan Modu Değiştirilemedi", &err_msg).await;
+            crate::notifier::DesktopNotifier::notify_error(ctx, &err_msg).await;
             "FAIL".to_string()
         }
     }
@@ -1210,10 +1276,19 @@ impl FanService {
             Self::save_config(mode_to_save, custom_curve_json).await;
             "OK".to_string()
         } else {
-            crate::notifier::DesktopNotifier::notify_error(
-                "Özel Fan Eğrisi Kaydedilemedi",
-                "Gönderilen eğri verisi geçersiz JSON formatında. Lütfen tekrar deneyin.",
-            ).await;
+            let is_tr = std::env::var("LANG").unwrap_or_default().starts_with("tr");
+            let (ctx, msg) = if is_tr {
+                (
+                    "Özel Fan Eğrisi Kaydedilemedi",
+                    "Gönderilen eğri verisi geçersiz JSON formatında. Lütfen tekrar deneyin.",
+                )
+            } else {
+                (
+                    "Failed to Save Custom Fan Curve",
+                    "The submitted fan curve data is not valid JSON. Please try again.",
+                )
+            };
+            crate::notifier::DesktopNotifier::notify_error(ctx, msg).await;
             "FAIL".to_string()
         }
     }
@@ -1343,5 +1418,53 @@ mod tests {
         // Interpolated point: midpoint of (50.0, 30.0) and (65.0, 60.0) is 57.5°C -> 45.0%
         let mid = FanService::evaluate_spline(&points, 57.5);
         assert!((mid - 45.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_advisory_thermal_warn_requires_continuous_3s_and_ignores_alternating_spikes() {
+        let t0 = std::time::Instant::now();
+        let mut warn_hot_since = None;
+        let mut warn_episode_notified = false;
+        let mut last_thermal_alert = None;
+
+        // Alternating 91, 87, 91, 87, 91°C at 1 Hz must never trigger (#338)
+        for (sec, temp) in [(0, 91.0), (1, 87.0), (2, 91.0), (3, 87.0), (4, 91.0)] {
+            let fired = FanService::update_advisory_thermal_warn_state(
+                temp,
+                true,
+                t0 + std::time::Duration::from_secs(sec),
+                &mut warn_hot_since,
+                &mut warn_episode_notified,
+                &mut last_thermal_alert,
+                true,
+            );
+            assert!(!fired, "Alternating spike at t={}s must not fire", sec);
+        }
+
+        // Continuous >= 90°C starting at t=10s: must not fire at +0s, +1s, +2s; must fire at +3s
+        warn_hot_since = None;
+        for sec in [10, 11, 12] {
+            let fired = FanService::update_advisory_thermal_warn_state(
+                91.0,
+                true,
+                t0 + std::time::Duration::from_secs(sec),
+                &mut warn_hot_since,
+                &mut warn_episode_notified,
+                &mut last_thermal_alert,
+                true,
+            );
+            assert!(!fired, "Must not fire before 3 full seconds elapsed (t={}s)", sec);
+        }
+        let fired_at_3s = FanService::update_advisory_thermal_warn_state(
+            91.0,
+            true,
+            t0 + std::time::Duration::from_secs(13),
+            &mut warn_hot_since,
+            &mut warn_episode_notified,
+            &mut last_thermal_alert,
+            true,
+        );
+        assert!(fired_at_3s, "Must fire after 3 full seconds of continuous >=90°C");
+        assert!(warn_episode_notified);
     }
 }

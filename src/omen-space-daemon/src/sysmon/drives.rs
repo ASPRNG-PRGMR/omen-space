@@ -314,6 +314,7 @@ pub fn resolve_physical_disk(sys_root: &Path, mount: &MountEntry) -> Option<Stri
 /// Used as a fallback when a partition is present in `mountinfo` but `statvfs` returns `None`
 /// (e.g. FUSE/`ntfs-3g` mounts without `allow_other` where root gets `EACCES`, or mounts outside
 /// the service sandbox).
+#[allow(dead_code)]
 fn block_size_bytes(sys_root: &Path, mount: &MountEntry) -> Option<u64> {
     let name = block_name_from_source(sys_root, &mount.source)
         .filter(|n| sys_root.join("class/block").join(n).exists() || sys_root.join("block").join(n).exists())
@@ -397,8 +398,6 @@ pub fn drive_usage(
         if let Some(fs) = group.iter().find_map(|m| statvfs(&m.mountpoint)) {
             slot.used_bytes = slot.used_bytes.saturating_add(fs.used);
             slot.total_bytes = slot.total_bytes.saturating_add(fs.total);
-        } else if let Some(part_bytes) = block_size_bytes(sys_root, group[0]) {
-            slot.total_bytes = slot.total_bytes.saturating_add(part_bytes);
         }
     }
     usage

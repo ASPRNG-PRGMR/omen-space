@@ -60,15 +60,20 @@ pub fn show_color_picker_popover(
     // Palette: Red, Green, Blue, Purple, Turquoise, Pink, White
     let palette = ["#FF0000", "#00FF00", "#0000FF", "#800080", "#40E0D0", "#FFC0CB", "#FFFFFF"];
     let palette_box = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).build();
-    for hex in palette {
+    for (idx, hex) in palette.iter().enumerate() {
         let btn = gtk::Button::builder().width_request(24).height_request(24).build();
         btn.add_css_class("circular");
+        let wname = format!("rgb_swatch_{}", idx);
+        btn.set_widget_name(&wname);
         let provider = gtk::CssProvider::new();
-        provider.load_from_string(&format!("button {{ background: {}; min-width: 24px; min-height: 24px; padding: 0; }}", hex));
+        provider.load_from_string(&format!(
+            "#{} {{ background: {}; background-color: {}; background-image: none; border: 1px solid rgba(255,255,255,0.35); min-width: 24px; min-height: 24px; padding: 0; }}",
+            wname, hex, hex
+        ));
         btn.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         
         let pop_clone = popover.clone();
-        let hex_clone = hex.to_string();
+        let hex_clone = (*hex).to_string();
         let cb = on_color_selected.clone();
         btn.connect_clicked(move |_| {
             cb(hex_clone.clone());

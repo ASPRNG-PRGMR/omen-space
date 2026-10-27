@@ -919,9 +919,17 @@ pub fn build_page(is_general: bool) -> gtk::Box {
         let c_avg = c_th.iter().sum::<i32>() / c_th.len() as i32;
 
         let mut g_th = gpu_temp_hist.borrow_mut();
-        g_th.push_back(stats.gpu_temp);
-        if g_th.len() > 5 { g_th.pop_front(); }
-        let g_avg = g_th.iter().sum::<i32>() / g_th.len() as i32;
+        if stats.gpu_temp > 0 {
+            g_th.push_back(stats.gpu_temp);
+            if g_th.len() > 5 { g_th.pop_front(); }
+        } else {
+            g_th.clear();
+        }
+        let g_avg = if g_th.is_empty() {
+            0
+        } else {
+            g_th.iter().sum::<i32>() / g_th.len() as i32
+        };
 
         cpu_ui.temp_label.set_label(&format!("{}°C", c_avg));
         cpu_ui.load_bar.set_fraction(stats.cpu_load);
@@ -929,7 +937,7 @@ pub fn build_page(is_general: bool) -> gtk::Box {
         cpu_ui.pwr_label.set_label(&format!("{:.1}W", stats.cpu_pwr));
         cpu_ui.fan_label.set_label(&format!("{} RPM", if stats.fan1_rpm > 0 { stats.fan1_rpm } else { stats.fan_rpm }));
 
-        if stats.gpu_temp <= 0 {
+        if stats.gpu_temp <= 0 || g_avg <= 0 {
             gpu_ui.temp_label.set_label("--");
         } else {
             gpu_ui.temp_label.set_label(&format!("{}°C", g_avg));

@@ -524,44 +524,47 @@ async fn set_gpu_mode(mode: &str) {
 }
 
 async fn wait_for_status_notifier_watcher() {
-    let conn = match Connection::session().await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Could not connect to session D-Bus to check StatusNotifierWatcher: {}", e);
-            return;
-        }
-    };
-
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut session_conn: Option<Connection> = None;
     loop {
-        let check = tokio::time::timeout(
-            std::time::Duration::from_millis(800),
-                                         conn.call_method(
-                                             Some("org.freedesktop.DBus"),
-                                                          "/org/freedesktop/DBus",
-                                                          Some("org.freedesktop.DBus"),
-                                                          "NameHasOwner",
-                                                          &"org.kde.StatusNotifierWatcher",
-                                         ),
-        )
-        .await;
-
-        match check {
-            Ok(Ok(msg)) => {
-                // Fixed: use .body().deserialize::<bool>() instead of body::<bool>()
-                if let Ok(has_owner) = msg.body().deserialize::<bool>() {
-                    if has_owner {
-                        info!("StatusNotifierWatcher is active on session D-Bus");
-                        return;
-                    }
+        if session_conn.is_none() {
+            match Connection::session().await {
+                Ok(c) => session_conn = Some(c),
+                Err(e) => {
+                    log::debug!("Could not connect to session D-Bus yet: {}", e);
                 }
-                log::debug!("StatusNotifierWatcher name has no owner yet");
             }
-            Ok(Err(e)) => {
-                log::debug!("D-Bus check failed: {}", e);
-            }
-            Err(_) => {
-                log::debug!("StatusNotifierWatcher check timed out; retrying...");
+        }
+
+        if let Some(ref conn) = session_conn {
+            let check = tokio::time::timeout(
+                std::time::Duration::from_millis(800),
+                conn.call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "NameHasOwner",
+                    &"org.kde.StatusNotifierWatcher",
+                ),
+            )
+            .await;
+
+            match check {
+                Ok(Ok(msg)) => {
+                    if let Ok(has_owner) = msg.body().deserialize::<bool>() {
+                        if has_owner {
+                            info!("StatusNotifierWatcher is active on session D-Bus");
+                            return;
+                        }
+                    }
+                    log::debug!("StatusNotifierWatcher name has no owner yet");
+                }
+                Ok(Err(e)) => {
+                    log::debug!("D-Bus check failed: {}", e);
+                }
+                Err(_) => {
+                    log::debug!("StatusNotifierWatcher check timed out; retrying...");
+                }
             }
         }
 

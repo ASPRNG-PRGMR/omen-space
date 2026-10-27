@@ -146,15 +146,53 @@ impl PowerService {
         (p1, p2)
     }
 
+    async fn load_or_capture_boot_rapl_baseline() -> (u32, u32) {
+        const BASELINE_PATH: &str = "/run/omen-space/rapl_baseline.json";
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        if !boot_id.is_empty() {
+            if let Ok(raw) = std::fs::read_to_string(BASELINE_PATH) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if val.get("boot_id").and_then(|v| v.as_str()) == Some(boot_id.as_str()) {
+                        let p1 = val.get("boot_pl1_w").and_then(|v| v.as_u64()).map(|v| v as u32);
+                        let p2 = val.get("boot_pl2_w").and_then(|v| v.as_u64()).map(|v| v as u32);
+                        if let (Some(pl1), Some(pl2)) = (p1, p2) {
+                            if (5..=250).contains(&pl1) && (5..=250).contains(&pl2) {
+                                return (pl1, pl2.max(pl1));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let (hw_pl1, hw_pl2) = Self::read_current_rapl_limits().await;
+        let boot_pl1_w = hw_pl1.unwrap_or(45);
+        let boot_pl2_w = hw_pl2.unwrap_or(115).max(boot_pl1_w);
+
+        if !boot_id.is_empty() {
+            let _ = std::fs::create_dir_all("/run/omen-space");
+            let payload = serde_json::json!({
+                "boot_id": boot_id,
+                "boot_pl1_w": boot_pl1_w,
+                "boot_pl2_w": boot_pl2_w,
+            });
+            let _ = std::fs::write(BASELINE_PATH, payload.to_string());
+        }
+
+        (boot_pl1_w, boot_pl2_w)
+    }
+
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = PowerConfig::load();
         // Detect real hardware profile on start
         config.power_profile = Self::detect_current_profile().await;
 
-        // Capture firmware/boot RAPL PL1 & PL2 BEFORE applying any saved overrides (#311)
-        let (hw_pl1, hw_pl2) = Self::read_current_rapl_limits().await;
-        let boot_pl1_w = hw_pl1.unwrap_or(45);
-        let boot_pl2_w = hw_pl2.unwrap_or(115).max(boot_pl1_w);
+        // Capture firmware/boot RAPL PL1 & PL2 BEFORE applying any saved overrides (#311, #338)
+        let (boot_pl1_w, boot_pl2_w) = Self::load_or_capture_boot_rapl_baseline().await;
         if !config.pl_enabled {
             config.pl1_w = boot_pl1_w;
             config.pl2_w = boot_pl2_w;

@@ -415,18 +415,36 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
-		/* 8C3F: Victus by HP Gaming Laptop 15-fa1xxx */
+		/* 8C3F / 8C2D: Victus by HP Gaming Laptop 15-fa1xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C3F")},
 		.driver_data = (void *)&victus_s_thermal_params,
 	},
 	{
-		/* 8EDD / 8EEF: OMEN HyperX 16 Gaming Laptop */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C2D")},
+		.driver_data = (void *)&victus_s_thermal_params,
+	},
+	{
+		/* 8EDD / 8EEF / 8EEC: OMEN HyperX Gaming Laptop 15/16 */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8EDD")},
 		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8EEF")},
 		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
+	{
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8EEC")},
+		.driver_data = (void *)&omen_v1_unknown_ec_thermal_params,
+	},
+	{
+		/* 8D26: HP OMEN Gaming Laptop 16-ap0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D26")},
+		.driver_data = (void *)&omen_v1_legacy_thermal_params,
+	},
+	{
+		/* 8A17: OMEN by HP Laptop 17t-ck100 */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A17")},
+		.driver_data = (void *)&omen_v1_legacy_thermal_params,
 	},
 	{},
 };
@@ -792,7 +810,13 @@ static int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 
         actual_insize = insize;
         bios_args_size = struct_size(args, data, actual_insize);
-        bios_args_size = max_t(size_t, bios_args_size, 144);
+        /*
+         * Allocate at least 512 bytes (0x200) for the WMI input buffer.
+         * Some newer OMEN / HyperX BIOSes (e.g. board 8EEC) index offset 0x90
+         * (144) or higher inside \_SB.WMID.WMBA regardless of datasize, which
+         * triggers AE_AML_BUFFER_LIMIT when the buffer is only 144 bytes (#335).
+         */
+        bios_args_size = max_t(size_t, bios_args_size, 512);
         args = kzalloc(bios_args_size, GFP_KERNEL);
         if (!args)
                 return -ENOMEM;
@@ -3803,11 +3827,26 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8E0F") },
 	},
 	{
-		/* 8EDD / 8EEF: OMEN HyperX 16 Gaming Laptop */
+		/* 8EDD / 8EEF / 8EEC: OMEN HyperX Gaming Laptop 15/16 */
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8EDD") },
 	},
 	{
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8EEF") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8EEC") },
+	},
+	{
+		/* 8C2D: Victus by HP Gaming Laptop 15-fa1xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C2D") },
+	},
+	{
+		/* 8D26: HP OMEN Gaming Laptop 16-ap0xxx */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D26") },
+	},
+	{
+		/* 8A17: OMEN by HP Laptop 17t-ck100 */
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8A17") },
 	},
 	{}
 };

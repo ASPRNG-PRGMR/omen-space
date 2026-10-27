@@ -315,22 +315,43 @@ pub fn build_page() -> gtk::Box {
     glib::spawn_future_local(async move {
         if let Ok(json) = crate::daemon_client::get_gpu_info_async().await {
             if let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) {
-                if let Some(mode) = info.get("mode").and_then(|v| v.as_str()) {
-                    upd_load.set(true);
-                    *boot_m_load.borrow_mut() = mode.to_string();
-                    if mode == "discrete" {
-                        bd_load.set_active(true);
-                        fw_val_load.set_css_classes(&["badge-warn"]);
-                    } else if mode == "advanced" {
-                        ba_load.set_active(true);
-                        fw_val_load.set_css_classes(&["badge-ok"]);
-                    } else if mode == "hybrid" {
-                        bh_load.set_active(true);
-                        fw_val_load.set_css_classes(&["badge-ok"]);
-                    }
-                    fw_val_load.set_label(&format_mux_mode_label(mode));
-                    upd_load.set(false);
+                let confirmed_mode = info
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("hybrid");
+                let pending_mode = info
+                    .get("pending_mode")
+                    .and_then(|v| v.as_str());
+                let effective_sel = pending_mode.unwrap_or(confirmed_mode);
+
+                upd_load.set(true);
+                *boot_m_load.borrow_mut() = confirmed_mode.to_string();
+                if effective_sel == "discrete" {
+                    bd_load.set_active(true);
+                } else if effective_sel == "advanced" {
+                    ba_load.set_active(true);
+                } else {
+                    bh_load.set_active(true);
                 }
+                let is_pending = pending_mode.is_some_and(|p| p != confirmed_mode);
+                warn_card.set_visible(is_pending);
+                if is_pending {
+                    let pending_label = match effective_sel {
+                        "discrete" => "Discrete (dGPU · Pending Reboot)",
+                        "advanced" => "Advanced Optimus (Pending Reboot)",
+                        _ => "Hybrid (MSHybrid · Pending Reboot)",
+                    };
+                    fw_val_load.set_label(pending_label);
+                    fw_val_load.set_css_classes(&["badge-warn"]);
+                } else {
+                    fw_val_load.set_label(&format_mux_mode_label(confirmed_mode));
+                    fw_val_load.set_css_classes(if confirmed_mode == "discrete" {
+                        &["badge-warn"]
+                    } else {
+                        &["badge-ok"]
+                    });
+                }
+                upd_load.set(false);
                 if let Some(routing) = info.get("routing_mode").and_then(|v| v.as_str()) {
                     if routing == "discrete" {
                         disp_val_load.set_label(&format!("eDP-1 → {} (Discrete)", gpu_name));

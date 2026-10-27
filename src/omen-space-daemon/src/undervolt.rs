@@ -177,11 +177,15 @@ fn is_cpu_voltage_locked(cpu_spec: &str) -> bool {
     if cpu_upper.contains("AMD") {
         return false;
     }
+    // Intel Core Ultra (Meteor Lake / Arrow Lake / Lunar Lake, including HX SKUs)
+    // does not support legacy FIVR MSR 0x150 voltage offsets (#338).
+    if cpu_upper.contains("CORE ULTRA") || cpu_upper.contains("ULTRA ") {
+        return true;
+    }
     let is_unlocked_hx = cpu_upper.contains("HX") || cpu_upper.contains("HK") || cpu_upper.contains("-K ");
     let is_locked_gen = cpu_upper.contains("12TH GEN")
         || cpu_upper.contains("13TH GEN")
         || cpu_upper.contains("14TH GEN")
-        || cpu_upper.contains("CORE ULTRA")
         || cpu_upper.contains("I5-12")
         || cpu_upper.contains("I7-12")
         || cpu_upper.contains("I9-12")
@@ -456,19 +460,31 @@ impl UndervoltService {
                 );
             }
 
-            // 1. Prefer the kernel's native processor_thermal_device_pci sysfs attribute when available (#313)
-            let mut applied = false;
+            // 1. Prefer the kernel's native processor_thermal_device_pci sysfs attribute when available (#313).
+            //    If the native sysfs attribute exists and rejects the write, fail cleanly instead of falling
+            //    back to raw MSR 0x1a2 writes that may have a different register layout (#338).
             if Path::new(INTEL_TCC_SYSFS_PATH).exists() {
                 if std::fs::write(INTEL_TCC_SYSFS_PATH, format!("{}\n", val)).is_ok() {
                     let (_, new_hw, _) = read_intel_tcc_hw();
                     if new_hw == Some(val) {
-                        applied = true;
+                        {
+                            let mut cfg = self.config.lock().await;
+                            cfg.tcc_offset = val;
+                            cfg.save();
+                        }
+                        info!("SetTccOffset (sysfs): {}", val);
+                        return "OK".to_string();
                     }
                 }
+                warn!(
+                    "SetTccOffset({}): native sysfs {} rejected write or readback mismatch",
+                    val, INTEL_TCC_SYSFS_PATH
+                );
+                return "FAIL: Native sysfs TCC offset write rejected".to_string();
             }
 
             // 2. Fallback to MSR 0x1a2 read-modify-write (bits 29:24, preserving TjMax in bits 23:16) with readback verification
-            if !applied {
+            {
                 let mut write_ok = true;
                 let cpu_count = count_cpus();
                 for cpu in 0..cpu_count {
@@ -602,5 +618,19 @@ impl UndervoltService {
             info!("Undervolt: Settings confirmed by user. Recovery Guard disarmed.");
         }
         "OK".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cpu_voltage_locked;
+
+    #[test]
+    fn core_ultra_hx_is_voltage_locked() {
+        assert!(is_cpu_voltage_locked("Intel(R) Core(TM) Ultra 9 275HX"));
+        assert!(is_cpu_voltage_locked("Intel Core Ultra 7 155H"));
+        assert!(is_cpu_voltage_locked("13th Gen Intel(R) Core(TM) i7-13700H"));
+        assert!(!is_cpu_voltage_locked("14th Gen Intel(R) Core(TM) i7-14700HX"));
+        assert!(!is_cpu_voltage_locked("AMD Ryzen 9 8940HX"));
     }
 }

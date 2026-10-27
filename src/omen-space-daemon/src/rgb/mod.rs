@@ -48,10 +48,10 @@ struct RgbHardware {
 }
 
 pub(crate) fn map_four_zone_index(board_id: &str, zone: usize) -> usize {
-    if matches!(board_id.trim().to_uppercase().as_str(), "8EEF" | "8EDD") {
-        // OMEN HyperX 16 (boards 8EEF / 8EDD) wire their 4-zone WMI buffer in the
+    if matches!(board_id.trim().to_uppercase().as_str(), "8EEF" | "8EDD" | "8EEC") {
+        // OMEN HyperX 15/16 (boards 8EEF / 8EDD / 8EEC) wire their 4-zone WMI buffer in the
         // reverse order of classic OMEN boards: hw zone0=WASD, zone1=Left,
-        // zone2=Middle, zone3=Right (#309).
+        // zone2=Middle, zone3=Right (#309, #335).
         match zone {
             0 => 1, // Software Left   -> Hardware Left (1)
             1 => 2, // Software Middle -> Hardware Middle (2)

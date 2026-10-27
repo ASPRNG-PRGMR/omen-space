@@ -157,7 +157,10 @@ impl LinuxCapabilityClassifier {
         let has_telemetry = has_hp_wmi_path || has_manual_fan_control || has_profile_control;
         
         if is_wmaa_abort_prone && has_manual_fan_control {
-            let mut reason = "Board 8BCD has field reports of ACPI WMAA/WHCM aborts where WMI-backed fan, RGB, and battery paths can report success without hardware effect. Treat visible manual/profile fan paths as degraded until an effective write/readback check proves control.".to_string();
+            let mut reason = format!(
+                "Board {} has field reports of ACPI WMAA/WHCM aborts where WMI-backed fan, RGB, and battery paths can report success without hardware effect. Treat visible manual/profile fan paths as degraded until an effective write/readback check proves control.",
+                board_id.trim()
+            );
             if !is_root {
                 reason.push_str(" Run with sudo for write/readback validation.");
             }
@@ -198,7 +201,10 @@ impl LinuxCapabilityClassifier {
                 reason.push_str(" Run with sudo to apply profile changes.");
             }
             if is_wmaa_abort_prone {
-                reason.push_str(" Board 8BCD is currently treated as degraded profile control because field diagnostics show ACPI WMAA/WHCM aborts.");
+                reason.push_str(&format!(
+                    " Board {} is currently treated as degraded profile control because field diagnostics show ACPI WMAA/WHCM aborts.",
+                    board_id.trim()
+                ));
             }
             
             return LinuxCapabilityAssessment {

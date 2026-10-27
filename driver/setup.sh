@@ -293,7 +293,9 @@ do_install() {
         -path '*/updates/*' -name 'hp-wmi.ko*' -delete 2>/dev/null || true
     depmod -a 2>/dev/null || true
 
-    # Remove all existing DKMS entries for this module
+    # Remove all existing DKMS entries for this module (including same-version
+    # state so source updates never reuse cached build artifacts, #338).
+    dkms remove -m "$MODNAME" -v "$MODVER" --all 2>/dev/null || true
     if dkms status "$MODNAME" 2>/dev/null | grep -q "$MODNAME"; then
         warn "Removing existing DKMS entries for $MODNAME..."
         for v in $(dkms status "$MODNAME" | grep -oP "(?<=${MODNAME}[/, ])[^,:]+" | tr -d ' ' | sort -u); do
@@ -301,6 +303,7 @@ do_install() {
             dkms remove -m "$MODNAME" -v "$v" --all 2>/dev/null || true
         done
     fi
+    rm -rf "/var/lib/dkms/${MODNAME}/${MODVER}"
 
     # ── Stock hp-wmi override ────────────────────────────────────────────────
     # Must be done BEFORE depmod/dkms so that when the DKMS module lands in
@@ -320,13 +323,9 @@ do_install() {
         info "Kernel $(uname -r) (< 7.0) detected — installing both hp-wmi and hp-omen-extra."
     fi
 
-    if ! dkms status "$MODNAME/$MODVER" 2>/dev/null | grep -Eq "^${MODNAME}/${MODVER}([,:]|$)"; then
-        dkms add -m "$MODNAME" -v "$MODVER" || true
-    else
-        info "DKMS source already present for $MODNAME/$MODVER, skipping dkms add."
-    fi
-    dkms build   -m "$MODNAME" -v "$MODVER"          || error "DKMS build failed. Check logs."
-    dkms install -m "$MODNAME" -v "$MODVER" --force   || error "DKMS install failed."
+    dkms add -m "$MODNAME" -v "$MODVER" || true
+    dkms build   -m "$MODNAME" -v "$MODVER" --force  || error "DKMS build failed. Check logs."
+    dkms install -m "$MODNAME" -v "$MODVER" --force  || error "DKMS install failed."
 
     # Refresh module dependency database so modprobe picks up the new .ko
     depmod -a

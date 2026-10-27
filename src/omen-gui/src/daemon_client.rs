@@ -537,6 +537,29 @@ pub async fn get_gpu_info_async() -> Result<String, Box<dyn std::error::Error>> 
 
 // ── Undervolt wrappers ───────────────────────────────────────────────────────
 
+pub async fn set_offset_async(plane: String, mv: i32) -> Result<String, Box<dyn std::error::Error>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let rt = get_runtime();
+    rt.spawn(async move {
+        let res: Result<String, String> = async {
+            let conn = get_conn().await.map_err(|e| e.to_string())?;
+            let proxy = UndervoltProxy::new(&conn).await.map_err(|e| e.to_string())?;
+            let r = proxy.set_offset(&plane, mv).await.map_err(|e| e.to_string())?;
+            if r.starts_with("FAIL") {
+                notify_dbus_error(&format!("Undervolt ({}) uygulanamıyor", plane), &r).await;
+            }
+            Ok(r)
+        }
+        .await;
+        let _ = tx.send(res);
+    });
+    match rx.await {
+        Ok(Ok(s)) => Ok(s),
+        Ok(Err(e)) => Err(e.into()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn set_undervolt_sync(core_mv: i32, cache_mv: i32) {
     let rt = get_runtime();
     rt.spawn(async move {

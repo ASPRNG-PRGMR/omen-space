@@ -326,6 +326,9 @@ pub fn build_page() -> gtk::Box {
     let loaded_core_apply = loaded_core_mv.clone();
     let loaded_cache_apply = loaded_cache_mv.clone();
     let loaded_tcc_apply = loaded_tcc.clone();
+    let warn_title_apply = warn_title.clone();
+    let warn_desc_apply = warn_desc.clone();
+    let badge_apply = status_badge.clone();
     apply_btn.connect_clicked(move |_| {
         let core_mv = *core_val_c.borrow();
         let cache_mv = cache_s_apply.value() as i32;
@@ -337,9 +340,26 @@ pub fn build_page() -> gtk::Box {
         if !*v_locked_apply.borrow()
             && (core_mv != *loaded_core_apply.borrow() || cache_mv != *loaded_cache_apply.borrow())
         {
-            crate::daemon_client::set_undervolt_sync(core_mv, cache_mv);
-            *loaded_core_apply.borrow_mut() = core_mv;
-            *loaded_cache_apply.borrow_mut() = cache_mv;
+            let loaded_c = loaded_core_apply.clone();
+            let loaded_ca = loaded_cache_apply.clone();
+            let wt = warn_title_apply.clone();
+            let wd = warn_desc_apply.clone();
+            let bd = badge_apply.clone();
+            glib::spawn_future_local(async move {
+                let r1 = crate::daemon_client::set_offset_async("core".to_string(), core_mv).await;
+                let r2 = crate::daemon_client::set_offset_async("cache".to_string(), cache_mv).await;
+                let ok1 = r1.as_deref().is_ok_and(|s| s == "OK");
+                let ok2 = r2.as_deref().is_ok_and(|s| s == "OK");
+                if ok1 && ok2 {
+                    *loaded_c.borrow_mut() = core_mv;
+                    *loaded_ca.borrow_mut() = cache_mv;
+                } else {
+                    wt.set_label(i18n::t("uv_lock_title"));
+                    wd.set_label(i18n::t("uv_lock_desc"));
+                    bd.set_label(i18n::t("msr_protected"));
+                    bd.set_css_classes(&["badge-warn"]);
+                }
+            });
         }
 
         crate::daemon_client::set_power_limits_sync(pl1, pl2);

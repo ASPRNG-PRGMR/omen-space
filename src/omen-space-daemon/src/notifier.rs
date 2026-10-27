@@ -74,17 +74,32 @@ impl DesktopNotifier {
         true
     }
 
-    fn send_via_user_session(title: &str, body: &str, urgency: u8, icon: &str, timeout_ms: i32) -> bool {
-        let Some((user, display, dbus_addr, xdg_runtime, _)) = Self::find_user_session_env() else {
-            return false;
-        };
+    fn has_direct_session_bus() -> bool {
+        // When running as a root systemd service without DBUS_SESSION_BUS_ADDRESS,
+        // Connection::session() always fails before falling back to the user session (#338).
+        (unsafe { libc::getuid() != 0 }) || std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+    }
+
+    fn run_notify_send(
+        user: &str,
+        display: &str,
+        dbus_addr: &str,
+        xdg_runtime: &str,
+        title: &str,
+        body: &str,
+        urgency: u8,
+        icon: &str,
+        timeout_ms: i32,
+        replaces_id: Option<u32>,
+        print_id: bool,
+    ) -> Result<Option<u32>, String> {
         let urgency_str = match urgency {
             0 => "low",
             2 => "critical",
             _ => "normal",
         };
         let mut cmd = Command::new("sudo");
-        cmd.arg("-u").arg(&user).arg("env").arg(format!("DISPLAY={}", display));
+        cmd.arg("-u").arg(user).arg("env").arg(format!("DISPLAY={}", display));
         if !dbus_addr.is_empty() {
             cmd.arg(format!("DBUS_SESSION_BUS_ADDRESS={}", dbus_addr));
         }
@@ -102,22 +117,93 @@ impl DesktopNotifier {
             "-t",
             &timeout_ms.to_string(),
         ]);
+        if print_id {
+            cmd.arg("-p");
+        }
+        if let Some(id) = replaces_id.filter(|&id| id > 0) {
+            cmd.arg("-r").arg(id.to_string());
+        }
         if urgency < 2 {
             cmd.arg("--transient");
         }
         cmd.args([title, body]);
         match cmd.output() {
-            Ok(out) if out.status.success() => true,
-            Ok(out) => {
-                warn!(
-                    "notify-send in user session exited with {}: {}",
-                    out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-                false
+            Ok(out) if out.status.success() => {
+                let parsed_id = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find_map(|l| l.trim().parse::<u32>().ok());
+                Ok(parsed_id)
             }
-            Err(e) => {
-                warn!("Failed to spawn notify-send in user session: {}", e);
+            Ok(out) => Err(format!(
+                "notify-send in user session exited with {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+            Err(e) => Err(format!("Failed to spawn notify-send in user session: {}", e)),
+        }
+    }
+
+    fn send_via_user_session(
+        tag: Option<&str>,
+        title: &str,
+        body: &str,
+        urgency: u8,
+        icon: &str,
+        timeout_ms: i32,
+    ) -> bool {
+        let Some((user, display, dbus_addr, xdg_runtime, _)) = Self::find_user_session_env() else {
+            return false;
+        };
+        let key = tag.map(|t| format!("{}:{}", user, t));
+        let replaces_id = key.as_ref().and_then(|k| {
+            NOTIFICATION_IDS
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().and_then(|m| m.get(k).copied()))
+        });
+        match Self::run_notify_send(
+            &user,
+            &display,
+            &dbus_addr,
+            &xdg_runtime,
+            title,
+            body,
+            urgency,
+            icon,
+            timeout_ms,
+            replaces_id,
+            key.is_some(),
+        ) {
+            Ok(maybe_id) => {
+                if let (Some(k), Some(id)) = (key, maybe_id) {
+                    if let Ok(mut g) = NOTIFICATION_IDS.lock() {
+                        g.get_or_insert_with(Default::default).insert(k, id);
+                    }
+                }
+                true
+            }
+            Err(first_err) => {
+                // Retry without -r/-p in case an older notify-send implementation rejects them
+                if replaces_id.is_some() || key.is_some() {
+                    if Self::run_notify_send(
+                        &user,
+                        &display,
+                        &dbus_addr,
+                        &xdg_runtime,
+                        title,
+                        body,
+                        urgency,
+                        icon,
+                        timeout_ms,
+                        None,
+                        false,
+                    )
+                    .is_ok()
+                    {
+                        return true;
+                    }
+                }
+                warn!("{}", first_err);
                 false
             }
         }
@@ -134,43 +220,45 @@ impl DesktopNotifier {
             .and_then(|t| NOTIFICATION_IDS.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(t).copied())))
             .unwrap_or(0);
         info!("Sending desktop notification: {} - {}", title, body);
-        if let Ok(connection) = Connection::session().await {
-            let mut hints = std::collections::HashMap::new();
-            hints.insert("urgency", zbus::zvariant::Value::U8(urgency));
-            // Routine notices must not pile up in the notification history (#327).
-            // Critical (urgency 2) notices stay persistent.
-            if urgency < 2 {
-                hints.insert("transient", zbus::zvariant::Value::Bool(true));
-            }
-
-            match connection.call_method(
-                Some("org.freedesktop.Notifications"),
-                "/org/freedesktop/Notifications",
-                Some("org.freedesktop.Notifications"),
-                "Notify",
-                &(
-                    "OMENSpace",
-                    replaces_id,
-                    "preferences-desktop-display",
-                    title,
-                    body,
-                    Vec::<&str>::new(),
-                    hints,
-                    5000i32, // expire_timeout in ms
-                ),
-            ).await {
-                Ok(reply) => {
-                    if let (Some(t), Ok(id)) = (tag, reply.body().deserialize::<u32>()) {
-                        if let Ok(mut g) = NOTIFICATION_IDS.lock() {
-                            g.get_or_insert_with(Default::default).insert(t.to_string(), id);
-                        }
-                    }
-                    return;
+        if Self::has_direct_session_bus() {
+            if let Ok(connection) = Connection::session().await {
+                let mut hints = std::collections::HashMap::new();
+                hints.insert("urgency", zbus::zvariant::Value::U8(urgency));
+                // Routine notices must not pile up in the notification history (#327).
+                // Critical (urgency 2) notices stay persistent.
+                if urgency < 2 {
+                    hints.insert("transient", zbus::zvariant::Value::Bool(true));
                 }
-                Err(e) => warn!("D-Bus Notify call failed on session bus: {}", e),
+
+                match connection.call_method(
+                    Some("org.freedesktop.Notifications"),
+                    "/org/freedesktop/Notifications",
+                    Some("org.freedesktop.Notifications"),
+                    "Notify",
+                    &(
+                        "OMENSpace",
+                        replaces_id,
+                        "preferences-desktop-display",
+                        title,
+                        body,
+                        Vec::<&str>::new(),
+                        hints,
+                        5000i32, // expire_timeout in ms
+                    ),
+                ).await {
+                    Ok(reply) => {
+                        if let (Some(t), Ok(id)) = (tag, reply.body().deserialize::<u32>()) {
+                            if let Ok(mut g) = NOTIFICATION_IDS.lock() {
+                                g.get_or_insert_with(Default::default).insert(t.to_string(), id);
+                            }
+                        }
+                        return;
+                    }
+                    Err(e) => warn!("D-Bus Notify call failed on session bus: {}", e),
+                }
             }
         }
-        if !Self::send_via_user_session(title, body, urgency, "preferences-desktop-display", 5000) {
+        if !Self::send_via_user_session(tag, title, body, urgency, "preferences-desktop-display", 5000) {
             warn!("Could not deliver desktop notification via session bus or user session helper");
         }
     }
@@ -178,35 +266,42 @@ impl DesktopNotifier {
     /// Send an error notification (urgency=critical, icon=dialog-error, 10s timeout).
     /// Use for hardware command failures, permission errors, D-Bus method errors.
     pub async fn notify_error(context: &str, err_msg: &str) {
-        let title = "OMEN Space — Hata";
-        let body = format!("{}\n\nHata kodu: {}", context, err_msg);
+        let is_tr = std::env::var("LANG").unwrap_or_default().starts_with("tr");
+        let title = if is_tr { "OMEN Space — Hata" } else { "OMEN Space — Error" };
+        let body = if is_tr {
+            format!("{}\n\nHata kodu: {}", context, err_msg)
+        } else {
+            format!("{}\n\nDetails: {}", context, err_msg)
+        };
         warn!("notify_error: {} | {}", context, err_msg);
 
-        if let Ok(connection) = Connection::session().await {
-            let mut hints = std::collections::HashMap::new();
-            hints.insert("urgency", zbus::zvariant::Value::U8(2u8)); // critical
+        if Self::has_direct_session_bus() {
+            if let Ok(connection) = Connection::session().await {
+                let mut hints = std::collections::HashMap::new();
+                hints.insert("urgency", zbus::zvariant::Value::U8(2u8)); // critical
 
-            match connection.call_method(
-                Some("org.freedesktop.Notifications"),
-                "/org/freedesktop/Notifications",
-                Some("org.freedesktop.Notifications"),
-                "Notify",
-                &(
-                    "OMEN Space",
-                    0u32,
-                    "dialog-error",
-                    title,
-                    body.as_str(),
-                    Vec::<&str>::new(),
-                    hints,
-                    10000i32, // 10 seconds — errors should be readable
-                ),
-            ).await {
-                Ok(_) => return,
-                Err(e) => warn!("D-Bus Notify error call failed on session bus: {}", e),
+                match connection.call_method(
+                    Some("org.freedesktop.Notifications"),
+                    "/org/freedesktop/Notifications",
+                    Some("org.freedesktop.Notifications"),
+                    "Notify",
+                    &(
+                        "OMEN Space",
+                        0u32,
+                        "dialog-error",
+                        title,
+                        body.as_str(),
+                        Vec::<&str>::new(),
+                        hints,
+                        10000i32, // 10 seconds — errors should be readable
+                    ),
+                ).await {
+                    Ok(_) => return,
+                    Err(e) => warn!("D-Bus Notify error call failed on session bus: {}", e),
+                }
             }
         }
-        let _ = Self::send_via_user_session(title, &body, 2, "dialog-error", 10000);
+        let _ = Self::send_via_user_session(Some("error"), title, &body, 2, "dialog-error", 10000);
     }
 
 

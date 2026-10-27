@@ -383,6 +383,16 @@ impl OverlayWindow {
         overlay.update_button_states();
         overlay.refresh_initial_state();
         overlay.setup_interactions();
+
+        // Periodically sync power profile and fan mode with daemon while visible (#320)
+        let overlay_sync = overlay.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+            if overlay_sync.window.is_visible() {
+                overlay_sync.refresh_initial_state();
+            }
+            glib::ControlFlow::Continue
+        });
+
         overlay
     }
 

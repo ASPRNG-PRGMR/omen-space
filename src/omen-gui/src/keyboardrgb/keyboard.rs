@@ -589,6 +589,69 @@ pub fn build_interactive_keyboard(
         }));
     });
     color_container.append(&global_color_btn);
+
+    let reset_rgb_btn = gtk::Button::builder()
+        .label(crate::i18n::t("kb_reset_default"))
+        .valign(gtk::Align::Center)
+        .margin_start(6)
+        .build();
+    let zc_reset = zone_colors.clone();
+    let pk_reset = per_key_colors.clone();
+    let kc_reset = key_colors.clone();
+    let keys_reset = keys_rc.clone();
+    let da_reset = drawing_area.clone();
+    let dd_reset = effects_dropdown.clone();
+    let speed_reset = speed_rc.clone();
+    reset_rgb_btn.connect_clicked(move |_| {
+        dd_reset.set_selected(0);
+        let default_zones = if detected_mode == KeyboardMode::Victus1Zone {
+            ["#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"]
+        } else {
+            ["#FF0055", "#9900FF", "#0066FF", "#00FFAA"]
+        };
+        {
+            let mut zc = zc_reset.borrow_mut();
+            for (i, hex) in default_zones.iter().enumerate() {
+                if i < zc.len() {
+                    zc[i] = (*hex).to_string();
+                }
+            }
+        }
+        {
+            let mut pk = pk_reset.borrow_mut();
+            for c in pk.iter_mut() {
+                *c = "#0099ED".to_string();
+            }
+        }
+        {
+            let zc = zc_reset.borrow();
+            let mut kc = kc_reset.borrow_mut();
+            for k in keys_reset.iter() {
+                let c = if detected_mode == KeyboardMode::Omen4Zone {
+                    let z = (get_zone_for_key(&k.name) - 1).clamp(0, 3) as usize;
+                    zc[z].clone()
+                } else if detected_mode == KeyboardMode::Victus1Zone {
+                    zc[0].clone()
+                } else {
+                    "#0099ED".to_string()
+                };
+                kc.insert(k.name.clone(), c);
+            }
+        }
+        if detected_mode == KeyboardMode::PerKey {
+            crate::daemon_client::set_per_key_colors_sync(pk_reset.borrow().clone());
+        } else if detected_mode == KeyboardMode::Victus1Zone {
+            crate::daemon_client::set_color_sync(8, default_zones[0].to_string());
+        } else {
+            for (i, hex) in default_zones.iter().enumerate() {
+                crate::daemon_client::set_color_sync(i as i32, (*hex).to_string());
+            }
+        }
+        crate::daemon_client::set_mode_sync("static", *speed_reset.borrow() as i32);
+        da_reset.queue_draw();
+    });
+    color_container.append(&reset_rgb_btn);
+
     controls_row.append(&color_container);
 
     controls_row.append(&gtk::Separator::new(gtk::Orientation::Vertical));

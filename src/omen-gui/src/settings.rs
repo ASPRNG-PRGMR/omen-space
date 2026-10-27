@@ -359,10 +359,31 @@ pub fn build_page(window: &adw::ApplicationWindow, on_lang_changed: Option<Rc<dy
         s5();
     });
 
+    let syncing_thermal_prot = Rc::new(std::cell::Cell::new(false));
     let s5_prot = save_settings_rc.clone();
+    let syncing_tp_notify = syncing_thermal_prot.clone();
     thermal_prot_row.connect_active_notify(move |r| {
         s5_prot();
-        crate::daemon_client::set_thermal_protection_sync(r.is_active());
+        if !syncing_tp_notify.get() {
+            crate::daemon_client::set_thermal_protection_sync(r.is_active());
+        }
+    });
+
+    // Reconcile Thermal Protection switch with live daemon truth (#338)
+    let tp_row_sync = thermal_prot_row.clone();
+    let syncing_tp_load = syncing_thermal_prot.clone();
+    glib::spawn_future_local(async move {
+        if let Ok(fan_json) = crate::daemon_client::get_fan_info_async().await {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&fan_json) {
+                if let Some(enabled) = val.get("thermal_protection_enabled").and_then(|v| v.as_bool()) {
+                    if tp_row_sync.is_active() != enabled {
+                        syncing_tp_load.set(true);
+                        tp_row_sync.set_active(enabled);
+                        syncing_tp_load.set(false);
+                    }
+                }
+            }
+        }
     });
     
     let s6 = save_settings_rc.clone();

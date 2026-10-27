@@ -225,11 +225,7 @@ impl MuxService {
         drop(g);
 
         let routing_mode = Self::detect_routing_mode().await;
-        let mode = if let Some(c) = cached {
-            c
-        } else {
-            Self::detect_mode().await
-        };
+        let mode = Self::detect_mode().await;
         let displays = Self::get_displays().await;
 
         let json = serde_json::json!({
@@ -238,6 +234,7 @@ impl MuxService {
             "available_backends": available_backends,
             "forced_backend": forced_backend,
             "mode": mode,
+            "pending_mode": cached,
             "routing_mode": routing_mode,
             "displays": displays,
         });
